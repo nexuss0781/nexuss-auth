@@ -1,6 +1,7 @@
 {
   "version": 2,
   "buildCommand": "npm run build -w packages/server",
+  "outputDirectory": ".",
   "rewrites": [
     {
       "source": "/(.*)",
