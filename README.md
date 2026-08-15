@@ -108,3 +108,25 @@ The SDK sends credentials with requests so the browser can use the HTTP-only ses
 Nex-auth stores only SHA-256 hashes of OAuth state values and session tokens. OAuth state is one-time use and expires quickly. Sessions are HTTP-only, `SameSite=Lax`, and `Secure` when the service public URL uses HTTPS. Provider credentials and the admin token are server-side secrets. Production deployments must use HTTPS, a managed PostgreSQL instance, secret injection, exact redirect allowlists, rate limiting at the edge, structured logging without token values, and scheduled cleanup of expired state and sessions.
 
 This initial version intentionally keeps the persistence contract separate from the HTTP layer so a future adapter can support another database without changing the SDK API.
+
+## Vercel deployment with Paradox-db
+
+The Vercel deployment uses the existing Paradox-db gateway as the persistent store. It does not create PostgreSQL or a new database. The serverless handler hydrates the encrypted database snapshot, executes the request, pushes changes back to Paradox-db, and closes the local temporary connection.
+
+Set the following Vercel environment variables before deploying:
+
+```text
+NEX_AUTH_PUBLIC_URL
+NEX_AUTH_ADMIN_TOKEN
+GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET
+GITHUB_CLIENT_ID
+GITHUB_CLIENT_SECRET
+PARADOX_GATEWAY_URL
+PARADOX_API_KEY
+PARADOX_PASSPHRASE
+PARADOX_PROJECT
+PARADOX_DATABASE
+```
+
+Use the gateway base URL including `/v1`, for example `https://paradox-db.onrender.com/v1`. `PARADOX_API_KEY` must be an API key issued by the Paradox-db gateway. `PARADOX_PASSPHRASE` is the encryption passphrase for the Nex-auth database; generate a long random value and keep it in Vercel secrets. The Vercel callback URL is `/oauth/callback` on the deployed auth domain and must be registered in both OAuth provider dashboards.
