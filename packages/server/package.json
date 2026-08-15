@@ -11,6 +11,7 @@
     "test": "npm run build && node --test dist/*.test.js"
   },
   "dependencies": {
+    "parad": "^2.2.1",
     "pg": "^8.13.1"
   },
   "devDependencies": {
