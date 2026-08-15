@@ -9,7 +9,7 @@ Nex-auth is a centralized authentication service and TypeScript SDK for adding *
 | Path | Purpose |
 |---|---|
 | `packages/server` | Central OAuth callback service, PostgreSQL persistence, project allowlists, and secure session cookies. |
-| `packages/sdk` | Framework-agnostic browser SDK published as `@nex-auth/sdk`. |
+| `packages/sdk` | Framework-agnostic browser SDK published as `nexuss-auth`. |
 | `packages/server/sql/schema.sql` | PostgreSQL schema for projects, users, identities, OAuth state, and sessions. |
 
 ## Local setup
@@ -71,13 +71,13 @@ Redirect URIs are exact-match allowlisted. Do not use a wildcard in production.
 Install the SDK in an application:
 
 ```bash
-npm install @nex-auth/sdk
+npm install nexuss-auth
 ```
 
 Initialize it once:
 
 ```ts
-import { createAuth } from '@nex-auth/sdk';
+import { createAuth } from 'nexuss-auth';
 
 const auth = createAuth({
   projectId: 'my-dashboard',

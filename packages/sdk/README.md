@@ -1,9 +1,9 @@
-# @nex-auth/sdk
+# nexuss-auth
 
 A small, framework-agnostic browser SDK for the Nex-auth centralized Google and GitHub login service.
 
 ```ts
-import { createAuth } from '@nex-auth/sdk';
+import { createAuth } from 'nexuss-auth';
 
 const auth = createAuth({
   projectId: 'my-project',
