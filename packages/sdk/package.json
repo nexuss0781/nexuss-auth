@@ -1,9 +1,12 @@
 {
-  "name": "@nex-auth/sdk",
+  "name": "nexuss-auth",
   "version": "0.1.0",
   "description": "Framework-agnostic browser SDK for Nex-auth unified Google and GitHub login",
   "license": "MIT",
-  "repository": "github:nexuss0781/nexuss-auth",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nexuss0781/nexuss-auth.git"
+  },
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -14,7 +17,10 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
