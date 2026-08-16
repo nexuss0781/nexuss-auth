@@ -1,6 +1,6 @@
 {
   "name": "nexuss-auth",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Framework-agnostic browser SDK for Nex-auth unified Google and GitHub login",
   "license": "MIT",
   "repository": {
@@ -22,10 +22,12 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "SKILL"
   ],
   "sideEffects": false,
   "scripts": {
+    "prepack": "node ../../scripts/sync-skill-package.mjs",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/*.test.js"

@@ -14,7 +14,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dashboard:dev": "npm run dev -w @nex-auth/dashboard",
     "dashboard:build": "npm run build -w @nex-auth/dashboard",
-    "dashboard:typecheck": "npm run typecheck -w @nex-auth/dashboard"
+    "dashboard:typecheck": "npm run typecheck -w @nex-auth/dashboard",
+    "skill:validate": "node scripts/validate-skill.mjs"
   },
   "engines": {
     "node": ">=20"
