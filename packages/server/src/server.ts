@@ -152,6 +152,10 @@ type ManagementIdentity = { kind: 'admin' } | { kind: 'user'; userId: string } |
 
 type UserIdentity = { kind: 'user' | 'token'; userId: string; tokenId?: string };
 
+function managedUserId(identity: ManagementIdentity): string | undefined {
+  return identity.kind === 'admin' ? undefined : identity.userId;
+}
+
 async function managementIdentity(request: Request, config: ServerConfig, db: Database): Promise<ManagementIdentity | null> {
   if (adminAuthorized(request, config)) return { kind: 'admin' };
   const bearer = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
@@ -312,7 +316,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
         if (url.pathname === '/v1/projects' && request.method === 'GET') {
           const identity = await managementIdentity(request, config, db);
           if (!identity) return jsonResponse({ error: 'unauthorized' }, 401, headers);
-          return jsonResponse({ projects: await db.listProjects(identity.kind === 'user' ? identity.userId : undefined) }, 200, headers);
+          return jsonResponse({ projects: await db.listProjects(managedUserId(identity)) }, 200, headers);
         }
 
         if (url.pathname === '/v1/projects' && request.method === 'POST') {
@@ -322,8 +326,8 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const nextProject = projectFromBody(body);
           if (!nextProject) return jsonResponse({ error: 'invalid_project_configuration' }, 400, headers);
           const existing = await db.getProject(nextProject.projectId);
-          if (existing && (identity.kind === 'user' ? existing.ownerUserId !== identity.userId : false)) return jsonResponse({ error: 'project_id_unavailable' }, 409, headers);
-          const ownedProject = { ...nextProject, ownerUserId: identity.kind === 'user' ? identity.userId : existing?.ownerUserId ?? null };
+          if (existing && (identity.kind !== 'admin' && existing.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_id_unavailable' }, 409, headers);
+          const ownedProject = { ...nextProject, ownerUserId: identity.kind === 'admin' ? existing?.ownerUserId ?? null : identity.userId };
           return jsonResponse(await db.upsertProject(ownedProject), 201, headers);
         }
 
@@ -334,7 +338,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const managedProjectId = projectRoute[1];
           if (!managedProjectId) return jsonResponse({ error: 'project_not_found' }, 404, headers);
           const managedProject = await db.getProject(managedProjectId);
-          if (!managedProject || (identity.kind === 'user' && managedProject.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_not_found' }, 404, headers);
+          if (!managedProject || (identity.kind !== 'admin' && managedProject.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_not_found' }, 404, headers);
           return jsonResponse(managedProject, 200, headers);
         }
 
@@ -344,7 +348,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const managedProjectId = projectRoute[1];
           if (!managedProjectId) return jsonResponse({ error: 'project_not_found' }, 404, headers);
           const existing = await db.getProject(managedProjectId);
-          if (!existing || (identity.kind === 'user' && existing.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_not_found' }, 404, headers);
+          if (!existing || (identity.kind !== 'admin' && existing.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_not_found' }, 404, headers);
           await db.deleteProject(managedProjectId);
           return new Response(null, { status: 204, headers });
         }
@@ -355,7 +359,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const managedProjectId = projectRoute[1];
           if (!managedProjectId) return jsonResponse({ error: 'project_not_found' }, 404, headers);
           const existing = await db.getProject(managedProjectId);
-          if (!existing || (identity.kind === 'user' && existing.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_not_found' }, 404, headers);
+          if (!existing || (identity.kind !== 'admin' && existing.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_not_found' }, 404, headers);
           const nextProject = projectFromBody(await jsonBody(request), existing);
           if (!nextProject || nextProject.projectId !== existing.projectId) return jsonResponse({ error: 'invalid_project_configuration' }, 400, headers);
           return jsonResponse(await db.upsertProject({ ...nextProject, ownerUserId: existing.ownerUserId }), 200, headers);
