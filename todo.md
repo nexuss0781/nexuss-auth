@@ -148,6 +148,24 @@
 
 ## Release publication
 
-- [ ] Commit release-readiness changes.
-- [ ] Push the commit to the Nexuss-auth repository.
-- [ ] Publish nexuss-auth 0.2.0 to npm.
+- [x] Commit release-readiness changes.
+- [x] Push the commit to the Nexuss-auth repository.
+- [ ] Publish nexuss-auth 0.2.0 to npm — npm authentication is required on this machine.
+
+
+## Authenticated PyPI CLI
+
+- [ ] Audit current project-management API and session contracts.
+- [ ] Define browser-login CLI authentication without user API keys.
+- [ ] Add project list/create/rename/delete/configure and project-ID output workflows.
+- [ ] Add icon and push/synchronization support with ownership enforcement.
+- [ ] Build and test the PyPI package and document installation and usage.
+
+
+## First PyPI CLI release
+
+- [x] Define the browser-login and local-session contract.
+- [x] Implement authenticated CLI commands without user API keys.
+- [x] Implement project list/create/show/rename/delete and provider/icon updates.
+- [x] Implement pull, push, diff, and project-ID output.
+- [x] Add Python packaging, tests, and usage documentation; interactive provider login requires a user account.

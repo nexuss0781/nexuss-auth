@@ -15,6 +15,7 @@ There are two supported request identities.
 | Caller | How it proves identity | Scope |
 |---|---|---|
 | Browser application | HTTP-only Nexuss-auth session cookie plus project context | The signed-in user’s own session and projects. |
+| User CLI | Short-lived `Authorization: Bearer <session token>` created by browser login | The signed-in user’s own projects. |
 | Private automation | `Authorization: Bearer <NEX_AUTH_ADMIN_TOKEN>` | Server-side project administration. |
 
 Never send the admin token from browser JavaScript.
@@ -147,7 +148,11 @@ The same project routes support two modes.
 
 ### Signed-in user mode
 
-The browser sends the HTTP-only session cookie. Project reads, creates, and updates are restricted to the authenticated user’s owned projects.
+The browser sends the HTTP-only session cookie. Project reads, creates, updates, and deletes are restricted to the authenticated user’s owned projects.
+
+### User CLI mode
+
+The Python CLI opens the Nexuss-auth browser login, receives a short-lived session token through a loopback callback, and sends it as `Authorization: Bearer <session token>`. This is a user session, not an API key. It has the same ownership scope as the signed-in dashboard and must never be replaced with `NEX_AUTH_ADMIN_TOKEN`.
 
 ### Private automation mode
 
@@ -248,7 +253,9 @@ curl -X PATCH https://nexuss-auth.vercel.app/v1/projects/my-dashboard \
   }'
 ```
 
-There is no public delete route in the current API. Do not simulate deletion by disabling a project unless the user explicitly chooses that behavior.
+### `DELETE /v1/projects/:projectId`
+
+Delete a project within the caller’s scope. The service returns `204` after a successful deletion. The CLI requires an explicit project-ID confirmation unless `--yes` is supplied for controlled automation.
 
 ## CORS and browser rules
 

@@ -208,6 +208,12 @@ export class ParadoxDatabase implements Database {
     });
   }
 
+  async deleteProject(projectId: string): Promise<void> {
+    await this.run((db) => {
+      db.execute('DELETE FROM projects WHERE project_id = ?', [projectId]);
+    });
+  }
+
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.run((db) => {
       db.execute('INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, expires_at) VALUES (?, ?, ?, ?, ?)', [state.stateHash, state.projectId, state.provider, state.redirectUri, iso(state.expiresAt)]);
