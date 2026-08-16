@@ -84,4 +84,10 @@
 - [x] Generate and integrate atmospheric landing and auth background assets.
 - [x] Build a public landing page at `/` with a clear route to `/auth`.
 - [x] Build a dedicated `/auth` page with colored Google and GitHub provider icons.
-- [ ] Verify responsive layout, asset loading, provider navigation, build, and production deployment.
+- [x] Verify responsive layout, asset loading, provider navigation, build, and production deployment.
+
+## First-viewport composition revision
+
+- [x] Make the background visual field visible and aligned within the first viewport.
+- [x] Balance the headline, entrypoint panel, and visual effect before scrolling.
+- [x] Verify desktop and mobile first-impression composition after the revision.
