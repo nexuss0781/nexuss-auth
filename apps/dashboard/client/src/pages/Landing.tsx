@@ -2,8 +2,8 @@
 import { ArrowUpRight, Check, ChevronRight, LockKeyhole, Orbit, Terminal } from "lucide-react";
 import { Link } from "wouter";
 
-const heroUrl = "/manus-storage/nexuss-auth-landing-hero_ee25d765.png";
-const fieldUrl = "/manus-storage/nexuss-auth-field-detail_59633d36.png";
+const heroUrl = "/brand/nexuss-auth-controlplane-hero.png";
+const fieldUrl = "/brand/nexuss-auth-provider-field.png";
 const logoUrl = "/brand/nexuss-auth-orbit-logo.png";
 
 export default function Landing() {
