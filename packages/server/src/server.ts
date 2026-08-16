@@ -163,7 +163,8 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
       const url = new URL(request.url);
       const projectId = request.headers.get('x-nex-auth-project') || url.searchParams.get('project_id');
       let project = projectId ? await db.getProject(projectId) : null;
-      if (!project && projectId === 'nexuss-dashboard' && url.pathname.startsWith('/oauth/start/')) {
+      if (projectId === 'nexuss-dashboard' && url.pathname.startsWith('/oauth/start/')) {
+        // Keep the control-plane project aligned with the canonical deployment URL.
         project = await db.upsertProject(systemDashboardProject(config));
       }
       const headers = {
