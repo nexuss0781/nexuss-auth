@@ -36,12 +36,13 @@ Project creation returns the project record, including the `projectId` needed by
 The CLI uses a JSON file named `nexuss.yaml.json` in the current directory for the first release. It is intentionally JSON-compatible so shell tools and AI agents can inspect it without another parser.
 
 ```bash
-nexuss project pull --id morrow-field
-nexuss project diff
-nexuss project push
+# First pull: --id is enough when the local file does not exist.
+nexuss project pull --id morrow-field --file nexuss.yaml.json
+nexuss project diff --file nexuss.yaml.json
+nexuss project push --file nexuss.yaml.json
 ```
 
-`pull` downloads the cloud record, `diff` shows local and cloud differences, and `push` updates only the project represented by the local `projectId`. Secrets are never written to the file.
+`pull` downloads the cloud record, `diff` shows local and cloud differences, and `push` updates only the project represented by the local `projectId`. If the file already exists, `pull` can infer the project ID from it. Secrets are never written to the file.
 
 ## Agent output
 
@@ -52,7 +53,7 @@ nexuss --json project list
 nexuss --json project show --id morrow-field
 ```
 
-The service enforces ownership for every user-session request. A user cannot list, inspect, update, or delete another account’s project.
+The service enforces ownership for every browser session and API-token request. A user or token cannot list, inspect, update, or delete another account’s project.
 
 
 ## API tokens
@@ -72,4 +73,4 @@ nexuss token list
 nexuss token revoke --id <token-id>
 ```
 
-A token can manage only projects owned by its user. It cannot generate or revoke other tokens and it is never equivalent to the server-only admin token.
+A token can manage only projects owned by its user. It cannot generate or revoke other tokens and it is never equivalent to the server-only admin token. If a token is revoked or invalid, activate a replacement token with `nexuss token use --value <new-token>`.

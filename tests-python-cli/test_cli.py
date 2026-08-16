@@ -16,6 +16,15 @@ class CliContractTests(unittest.TestCase):
         args = parser.parse_args(["project", "rename", "--id", "demo", "--name", "Renamed"])
         self.assertEqual(args.project_action, "rename")
         self.assertEqual(args.name, "Renamed")
+        pull = parser.parse_args(["project", "pull", "--id", "demo"])
+        self.assertEqual(pull.project_action, "pull")
+        self.assertEqual(pull.id, "demo")
+
+    def test_missing_local_file_explains_first_time_pull(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "missing.json"
+            with self.assertRaisesRegex(RuntimeError, "project pull --id"):
+                read_config(path)
 
     def test_local_project_file_round_trip(self):
         project = {"projectId": "morrow-field", "name": "Morrow Field", "enabledProviders": ["google", "github"]}
