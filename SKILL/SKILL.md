@@ -11,8 +11,9 @@ Read this file first. Then read only the reference file required for the current
 | Task | Read |
 |---|---|
 | Add sign-in to an application | [`INTEGRATION.md`](./INTEGRATION.md) |
+| Authenticate or operate the user CLI | [`CLI.md`](./CLI.md) |
 | Call or explain HTTP endpoints | [`API.md`](./API.md) |
-| Create or update projects with an agent | [`AUTOMATION.md`](./AUTOMATION.md) |
+| Create or update projects with protected admin automation | [`AUTOMATION.md`](./AUTOMATION.md) |
 | Deploy, troubleshoot, or operate production | [`OPERATIONS.md`](./OPERATIONS.md) |
 
 ## Non-negotiable rules
@@ -22,7 +23,7 @@ Read this file first. Then read only the reference file required for the current
 3. **Use exact redirect addresses.** Register the complete callback address. Do not add wildcards in production.
 4. **Use the SDK for normal application integration.** Call the HTTP API directly only when the task requires custom transport, server integration, or API inspection.
 5. **Treat the browser session as the user credential.** Send requests with credentials included. Do not copy, decode, log, or expose the HTTP-only cookie.
-6. **Keep ownership boundaries intact.** A signed-in user may manage only projects assigned to that user. An automation token is a separate server-side authority.
+6. **Keep ownership boundaries intact.** A signed-in user and that user's `nxa_` API token may manage only projects assigned to that user. Only a protected admin credential has server-wide authority.
 7. **Do not claim that a user is signed in until `getUser()` or `GET /v1/me` returns a user object.** A successful redirect alone is not proof of an active application session.
 8. **Do not retry provider authorization blindly.** First inspect the project ID, redirect address, provider configuration, and server response.
 9. **Do not log access tokens, provider secrets, admin tokens, session cookies, OAuth codes, or state values.** Redact these values in diagnostics.
@@ -98,8 +99,8 @@ When asked to integrate Nexuss-auth, the agent must first state which values are
 | Mode | Credential | Appropriate use |
 |---|---|---|
 | Application session | HTTP-only browser cookie | Sign users in and read the current user. |
-| User project management | Signed-in dashboard session | Let an ordinary user create and manage their own projects. |
-| Server automation | `NEX_AUTH_ADMIN_TOKEN` | Manage projects from a private server, CI job, CLI, or agent process. |
+| User project management | Browser CLI session or user `nxa_` token | Let an ordinary user or their authorized agent create and manage only that user's projects. |
+| Server automation | `NEX_AUTH_ADMIN_TOKEN` | Manage projects from a protected private server or CI job. |
 
 The agent must not mix these modes. A browser must never receive the automation token. An automation process must not pretend to be an ordinary user. If the user asks for a project operation but has not chosen a mode, ask whether the operation is for a signed-in person or protected automation.
 
@@ -116,4 +117,4 @@ An integration is complete only when all of the following are true:
 - No provider secret, admin token, OAuth code, or session cookie appears in source, logs, browser storage, or error messages.
 - The application handles `user: null`, validation errors, authorization errors, and service errors without losing user input.
 
-For exact endpoint contracts, use [`API.md`](./API.md). For code integration, use [`INTEGRATION.md`](./INTEGRATION.md). For agent and CLI project management, use [`AUTOMATION.md`](./AUTOMATION.md). For production checks, use [`OPERATIONS.md`](./OPERATIONS.md).
+For the complete user CLI workflow, use [`CLI.md`](./CLI.md). For exact endpoint contracts, use [`API.md`](./API.md). For code integration, use [`INTEGRATION.md`](./INTEGRATION.md). For protected admin automation, use [`AUTOMATION.md`](./AUTOMATION.md). For production checks, use [`OPERATIONS.md`](./OPERATIONS.md).
