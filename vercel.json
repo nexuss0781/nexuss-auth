@@ -4,7 +4,7 @@
   "outputDirectory": "apps/dashboard/dist",
   "functions": {
     "api/index.ts": {
-      "includeFiles": ["node_modules/sql.js/dist/sql-wasm.wasm"]
+      "includeFiles": "node_modules/sql.js/dist/sql-wasm.wasm"
     }
   },
   "rewrites": [
