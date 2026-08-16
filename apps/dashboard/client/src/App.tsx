@@ -1,4 +1,4 @@
-/** Design reminder: Monochrome Control Plane — precise black-and-white navigation, project-first hierarchy, and agent-native clarity. */
+/** Design reminder: Monochrome authentication workspace with clear, restrained user flows. */
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
