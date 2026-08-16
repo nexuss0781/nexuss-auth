@@ -235,8 +235,13 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           if (!sessionToken) return jsonResponse({ user: null }, 200, headers);
           const session = await db.getSession(hashToken(sessionToken));
           if (!session || session.projectId !== projectId) return jsonResponse({ user: null }, 200, headers);
-          const user = await db.getUser(session.userId);
-          return jsonResponse({ user }, 200, headers);
+          try {
+            const user = await db.getUser(session.userId);
+            return jsonResponse({ user }, 200, headers);
+          } catch (error) {
+            console.error('Failed to resolve authenticated user profile', error);
+            return jsonResponse({ user: null }, 200, headers);
+          }
         }
 
         if (url.pathname === '/v1/logout' && request.method === 'POST') {
