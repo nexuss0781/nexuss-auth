@@ -179,3 +179,55 @@ test('a signed-in user can create, use, list, and revoke an API token without ex
   const rejected = await app.fetch(new Request('https://auth.example.com/v1/projects', { headers: { authorization: `Bearer ${created.token}` } }));
   assert.equal(rejected.status, 401);
 });
+
+
+test('an API token is restricted to its owner projects for list, inspect, create, update, and delete', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject({ ...demoProject, ownerUserId: 'owner' });
+  await db.upsertProject({ ...demoProject, projectId: 'other', name: 'Other', ownerUserId: 'other-user' });
+  const ownerToken = 'nxa_owner-token';
+  db.apiTokens.set('owner-token', {
+    tokenId: 'owner-token',
+    userId: 'owner',
+    tokenHash: hashToken(ownerToken),
+    tokenPrefix: ownerToken.slice(0, 12),
+    label: 'Owner token',
+    createdAt: new Date(),
+    lastUsedAt: null,
+    revokedAt: null,
+  });
+  const app = createAuthApp(config, db);
+
+  const listed = await app.fetch(new Request('https://auth.example.com/v1/projects', {
+    headers: { authorization: `Bearer ${ownerToken}` },
+  }));
+  assert.equal(listed.status, 200);
+  assert.deepEqual((await listed.json()).projects.map((project: ProjectRecord) => project.projectId), ['demo']);
+
+  const hidden = await app.fetch(new Request('https://auth.example.com/v1/projects/other', {
+    headers: { authorization: `Bearer ${ownerToken}` },
+  }));
+  assert.equal(hidden.status, 404);
+
+  const created = await app.fetch(new Request('https://auth.example.com/v1/projects', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${ownerToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ ...demoProject, projectId: 'created-by-token', name: 'Created by token' }),
+  }));
+  assert.equal(created.status, 201);
+  assert.equal((await created.json()).ownerUserId, 'owner');
+
+  const updated = await app.fetch(new Request('https://auth.example.com/v1/projects/other', {
+    method: 'PATCH',
+    headers: { authorization: `Bearer ${ownerToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Should not update' }),
+  }));
+  assert.equal(updated.status, 404);
+
+  const deleted = await app.fetch(new Request('https://auth.example.com/v1/projects/other', {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${ownerToken}` },
+  }));
+  assert.equal(deleted.status, 404);
+  assert.ok(await db.getProject('other'));
+});
