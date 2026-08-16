@@ -100,5 +100,10 @@
 
 ## Google provider mark
 
-- [ ] Add an official multicolor Google G asset to the authorization CTA.
-- [ ] Verify the Google CTA and redeploy the production auth page.
+- [x] Add an official multicolor Google G asset to the authorization CTA.
+- [x] Verify the Google CTA and redeploy the production auth page.
+
+## Auth vertical balance
+
+- [ ] Move the authorization panel upward slightly and equalize visible space above and below it.
+- [ ] Verify the balanced auth composition and redeploy production.
