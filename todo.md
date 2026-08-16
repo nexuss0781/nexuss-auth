@@ -67,3 +67,12 @@
 - [x] Ensure users see a clean empty state before creating their first project and a project list only after saved projects exist.
 - [x] Review all visible copy for concise, selective, user-agnostic product language.
 - [x] Verify the revised dashboard responsively and run the final build/tests.
+
+## Dashboard information architecture refinement
+
+- [x] Separate the guide, project list, project creation, project settings, and integration views into distinct pages or routes.
+- [x] Build a scoped dashboard sidebar with clear navigation and project context.
+- [x] Add a signed-in user card using authenticated avatar, display name, and email when available.
+- [x] Make the “Simple by default” guidance card dismissible and persist its dismissal across sessions.
+- [x] Keep project creation separate from project editing and prevent empty editor cards from appearing before creation.
+- [x] Verify responsive navigation, page transitions, and the complete create-to-settings flow.

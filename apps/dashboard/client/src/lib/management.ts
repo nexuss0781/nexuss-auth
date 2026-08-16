@@ -1,6 +1,13 @@
 export type Provider = 'google' | 'github';
 export type ProjectStatus = 'active' | 'disabled';
 
+export interface ManagedUser {
+  id: string;
+  email: string | null;
+  name: string | null;
+  avatarUrl: string | null;
+}
+
 export interface ManagedProject {
   projectId: string;
   name: string;
@@ -30,6 +37,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) throw new ManagementError(response.status, `Project management request failed with status ${response.status}`);
   return await response.json() as T;
+}
+
+export function getCurrentUser(): Promise<ManagedUser | null> {
+  return request<{ user: ManagedUser | null }>('/v1/me').then((payload) => payload.user);
 }
 
 export function listManagedProjects(): Promise<ManagedProject[]> {
