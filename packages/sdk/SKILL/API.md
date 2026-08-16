@@ -15,6 +15,7 @@ There are two supported request identities.
 | Caller | How it proves identity | Scope |
 |---|---|---|
 | Browser application | HTTP-only Nexuss-auth session cookie plus project context | The signed-in user’s own session and projects. |
+| User CLI | Short-lived `Authorization: Bearer <session token>` created by browser login | The signed-in user’s own projects. |
 | Private automation | `Authorization: Bearer <NEX_AUTH_ADMIN_TOKEN>` | Server-side project administration. |
 
 Never send the admin token from browser JavaScript.
@@ -147,7 +148,11 @@ The same project routes support two modes.
 
 ### Signed-in user mode
 
-The browser sends the HTTP-only session cookie. Project reads, creates, and updates are restricted to the authenticated user’s owned projects.
+The browser sends the HTTP-only session cookie. Project reads, creates, updates, and deletes are restricted to the authenticated user’s owned projects.
+
+### User CLI mode
+
+The Python CLI opens the Nexuss-auth browser login, receives a short-lived session token through a loopback callback, and sends it as `Authorization: Bearer <session token>`. This is a user session, not an API key. It has the same ownership scope as the signed-in dashboard and must never be replaced with `NEX_AUTH_ADMIN_TOKEN`.
 
 ### Private automation mode
 
@@ -248,7 +253,9 @@ curl -X PATCH https://nexuss-auth.vercel.app/v1/projects/my-dashboard \
   }'
 ```
 
-There is no public delete route in the current API. Do not simulate deletion by disabling a project unless the user explicitly chooses that behavior.
+### `DELETE /v1/projects/:projectId`
+
+Delete a project within the caller’s scope. The service returns `204` after a successful deletion. The CLI requires an explicit project-ID confirmation unless `--yes` is supplied for controlled automation.
 
 ## CORS and browser rules
 
@@ -272,3 +279,36 @@ The API may return an error object such as:
 ```
 
 Do not expose raw server errors to end users. Record a safe request ID or status code instead.
+
+
+## Per-user API tokens
+
+The signed-in dashboard session may create and revoke user-owned CLI tokens. A token is a user credential, not an administrator credential. The service stores only its hash and returns the secret once at creation time.
+
+### `POST /v1/tokens`
+
+Create a token with a signed-in browser session:
+
+```json
+{"label":"Portfolio CLI"}
+```
+
+The response contains `token`, `tokenId`, `tokenPrefix`, `label`, `createdAt`, and a warning that the secret will not be shown again. Never write the full token to logs, source control, screenshots, or project configuration files.
+
+### `GET /v1/tokens`
+
+List token metadata for the signed-in user. The response contains token IDs, prefixes, labels, creation time, last-use time, and revocation time. It never contains the full secret.
+
+### `DELETE /v1/tokens/:tokenId`
+
+Revoke one token. Only the signed-in owner can revoke it. A revoked token immediately fails project-management requests with `401`.
+
+### Using a token for user-scoped project management
+
+Send the token as a bearer credential:
+
+```http
+Authorization: Bearer nxa_<user-token>
+```
+
+This credential can list, create, inspect, update, and delete only projects owned by the token’s user. It cannot create, list, or revoke API tokens. Token administration requires the signed-in browser session.
