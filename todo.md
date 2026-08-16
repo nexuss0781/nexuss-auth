@@ -91,3 +91,9 @@
 - [x] Make the background visual field visible and aligned within the first viewport.
 - [x] Balance the headline, entrypoint panel, and visual effect before scrolling.
 - [x] Verify desktop and mobile first-impression composition after the revision.
+
+## Production visual parity
+
+- [ ] Compare deployed and preview hero assets and visual treatment.
+- [ ] Strengthen the hero effect so production renders the same first impression.
+- [ ] Redeploy and verify the live landing page visually.
