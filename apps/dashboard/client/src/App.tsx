@@ -8,6 +8,7 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
+import Tokens from "./pages/Tokens";
 
 function Router() {
   return (
@@ -15,6 +16,7 @@ function Router() {
       <Route path="/" component={Landing} />
       <Route path="/auth" component={Auth} />
       <Route path="/dashboard" component={Home} />
+      <Route path="/dashboard/tokens" component={Tokens} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>

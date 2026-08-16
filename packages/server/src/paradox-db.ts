@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { connect, type ParadConnection } from 'parad';
 import type {
+  ApiTokenRecord,
   CreateSessionInput,
   Database,
   OAuthProfile,
@@ -61,6 +62,18 @@ const schemaStatements = [
   'CREATE INDEX IF NOT EXISTS oauth_states_expires_at_idx ON oauth_states(expires_at)',
   'CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id)',
   'CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at)',
+  `CREATE TABLE IF NOT EXISTS api_tokens (
+    token_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_prefix TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT 'CLI token',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TEXT,
+    revoked_at TEXT
+  )`,
+  'CREATE INDEX IF NOT EXISTS api_tokens_user_id_idx ON api_tokens(user_id)',
+  'CREATE INDEX IF NOT EXISTS api_tokens_hash_idx ON api_tokens(token_hash)',
 ];
 
 const projectMigrationStatements = [
@@ -275,6 +288,36 @@ export class ParadoxDatabase implements Database {
   async deleteSession(tokenHash: string): Promise<void> {
     await this.run((db) => {
       db.execute('DELETE FROM sessions WHERE token_hash = ?', [tokenHash]);
+    });
+  }
+
+  async createApiToken(token: ApiTokenRecord): Promise<void> {
+    await this.run((db) => {
+      db.execute('INSERT INTO api_tokens (token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [token.tokenId, token.userId, token.tokenHash, token.tokenPrefix, token.label, iso(token.createdAt), token.lastUsedAt ? iso(token.lastUsedAt) : null, token.revokedAt ? iso(token.revokedAt) : null]);
+    });
+  }
+
+  async listApiTokens(userId: string): Promise<ApiTokenRecord[]> {
+    return this.run((db) => rows<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; label: string; created_at: string; last_used_at: string | null; revoked_at: string | null }>(db, 'SELECT token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC', [userId]).map((row) => ({ tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, label: row.label, createdAt: date(row.created_at), lastUsedAt: row.last_used_at ? date(row.last_used_at) : null, revokedAt: row.revoked_at ? date(row.revoked_at) : null })));
+  }
+
+  async getApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null> {
+    return this.run((db) => {
+      const row = one<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; label: string; created_at: string; last_used_at: string | null; revoked_at: string | null }>(db, 'SELECT token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL', [tokenHash]);
+      return row ? { tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, label: row.label, createdAt: date(row.created_at), lastUsedAt: row.last_used_at ? date(row.last_used_at) : null, revokedAt: row.revoked_at ? date(row.revoked_at) : null } : null;
+    });
+  }
+
+  async touchApiToken(tokenId: string): Promise<void> {
+    await this.run((db) => {
+      db.execute('UPDATE api_tokens SET last_used_at = ? WHERE token_id = ?', [iso(new Date()), tokenId]);
+    });
+  }
+
+  async revokeApiToken(userId: string, tokenId: string): Promise<boolean> {
+    return this.run((db) => {
+      const result = db.execute('UPDATE api_tokens SET revoked_at = ? WHERE token_id = ? AND user_id = ? AND revoked_at IS NULL', [iso(new Date()), tokenId, userId]);
+      return result.changes > 0;
     });
   }
 }

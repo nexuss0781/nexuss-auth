@@ -60,6 +60,17 @@ export interface SessionRecord {
   expiresAt: Date;
 }
 
+export interface ApiTokenRecord {
+  tokenId: string;
+  userId: string;
+  tokenHash: string;
+  tokenPrefix: string;
+  label: string;
+  createdAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+}
+
 export interface CreateSessionInput {
   userId: string;
   projectId: string;
@@ -80,4 +91,9 @@ export interface Database {
   getSession(tokenHash: string): Promise<SessionRecord | null>;
   getUser(userId: string): Promise<UserRecord | null>;
   deleteSession(tokenHash: string): Promise<void>;
+  createApiToken(token: ApiTokenRecord): Promise<void>;
+  listApiTokens(userId: string): Promise<ApiTokenRecord[]>;
+  getApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null>;
+  touchApiToken(tokenId: string): Promise<void>;
+  revokeApiToken(userId: string, tokenId: string): Promise<boolean>;
 }

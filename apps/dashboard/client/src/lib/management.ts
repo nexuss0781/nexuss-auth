@@ -8,6 +8,15 @@ export interface ManagedUser {
   avatarUrl: string | null;
 }
 
+export interface ApiTokenMetadata {
+  tokenId: string;
+  tokenPrefix: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
 export interface ManagedProject {
   projectId: string;
   name: string;
@@ -53,6 +62,18 @@ export function createManagedProject(project: ManagedProject): Promise<ManagedPr
 
 export function updateManagedProject(projectId: string, updates: Partial<Omit<ManagedProject, 'projectId'>>): Promise<ManagedProject> {
   return request<ManagedProject>(`/v1/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify(updates) });
+}
+
+export function listApiTokens(): Promise<ApiTokenMetadata[]> {
+  return request<{ tokens: ApiTokenMetadata[] }>("/v1/tokens").then((payload) => payload.tokens);
+}
+
+export function createApiToken(label: string): Promise<{ token: string; tokenId: string; tokenPrefix: string; label: string; createdAt: string; warning: string }> {
+  return request<{ token: string; tokenId: string; tokenPrefix: string; label: string; createdAt: string; warning: string }>("/v1/tokens", { method: "POST", body: JSON.stringify({ label }) });
+}
+
+export function revokeApiToken(tokenId: string): Promise<void> {
+  return request<void>(`/v1/tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" });
 }
 
 export function beginDashboardSignIn(provider: Provider): void {

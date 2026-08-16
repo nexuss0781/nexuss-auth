@@ -44,6 +44,22 @@ export interface NexAuthManagementConfig {
   fetch?: typeof fetch;
 }
 
+export interface NexAuthUserManagementConfig {
+  authUrl: string;
+  sessionToken: string;
+  projectId?: string;
+  fetch?: typeof fetch;
+}
+
+export interface NexAuthApiToken {
+  tokenId: string;
+  tokenPrefix: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
 export function buildLoginUrl(config: Pick<NexAuthConfig, 'projectId' | 'authUrl'>, provider: Provider, redirectUri: string): string {
   if (!config.projectId.trim()) throw new Error('Nex-auth projectId is required');
   if (!['google', 'github'].includes(provider)) throw new Error(`Unsupported provider: ${provider}`);
@@ -160,4 +176,53 @@ export class NexAuthManagementClient {
 
 export function createManagementClient(config: NexAuthManagementConfig): NexAuthManagementClient {
   return new NexAuthManagementClient(config);
+}
+
+export class NexAuthUserManagementClient {
+  private readonly authUrl: string;
+  private readonly sessionToken: string;
+  private readonly projectId: string;
+  private readonly fetcher: typeof fetch;
+
+  constructor(config: NexAuthUserManagementConfig) {
+    const authUrl = new URL(config.authUrl);
+    if (!['http:', 'https:'].includes(authUrl.protocol)) throw new Error('Nex-auth authUrl must use HTTP or HTTPS');
+    if (!config.sessionToken.trim()) throw new Error('Nex-auth sessionToken is required');
+    this.authUrl = authUrl.toString().replace(/\/$/, '');
+    this.sessionToken = config.sessionToken;
+    this.projectId = config.projectId ?? 'nexuss-dashboard';
+    this.fetcher = config.fetch ?? fetch;
+  }
+
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await this.fetcher(new URL(path, this.authUrl), {
+      ...init,
+      headers: { authorization: `Bearer ${this.sessionToken}`, 'x-nex-auth-project': this.projectId, 'content-type': 'application/json', ...(init.headers ?? {}) },
+    });
+    if (!response.ok) throw new Error(`Nex-auth user management request failed with status ${response.status}`);
+    if (response.status === 204) return undefined as T;
+    return await response.json() as T;
+  }
+
+  async listTokens(): Promise<NexAuthApiToken[]> {
+    const payload = await this.request<{ tokens: NexAuthApiToken[] }>('/v1/tokens');
+    return payload.tokens;
+  }
+
+  async createToken(label = 'CLI token'): Promise<{ token: string; tokenId: string; tokenPrefix: string; label: string; createdAt: string; warning: string }> {
+    return this.request('/v1/tokens', { method: 'POST', body: JSON.stringify({ label }) });
+  }
+
+  async revokeToken(tokenId: string): Promise<void> {
+    await this.request<void>(`/v1/tokens/${encodeURIComponent(tokenId)}`, { method: 'DELETE' });
+  }
+
+  async listProjects(): Promise<NexAuthProject[]> {
+    const payload = await this.request<{ projects: NexAuthProject[] }>('/v1/projects');
+    return payload.projects;
+  }
+}
+
+export function createUserManagementClient(config: NexAuthUserManagementConfig): NexAuthUserManagementClient {
+  return new NexAuthUserManagementClient(config);
 }

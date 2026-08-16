@@ -87,6 +87,23 @@ nexuss project delete --id my-dashboard
 
 Project creation returns the project ID and full public configuration. Use `--json` for AI agents and scripts. Use `nexuss project pull`, `nexuss project diff`, and `nexuss project push` to synchronize a local project file with the cloud record.
 
+Generate a user token from a browser-authenticated CLI session, then activate it for subsequent project commands:
+
+```bash
+nexuss token create --label "Portfolio CLI"
+nexuss token use --value nxa_<copied-secret>
+nexuss project list
+```
+
+Use token metadata and revocation only from the browser-authenticated session:
+
+```bash
+nexuss token list
+nexuss token revoke --id <token-id>
+```
+
+The full token is shown only once. Store it in the operating system credential store or a protected CI secret. Never commit it, print it in debug logs, or place it in browser code. A user token is limited to that user’s projects; it is not an admin token.
+
 ## Private automation CLI
 
 A protected server or CI process may use the separate TypeScript management CLI with:

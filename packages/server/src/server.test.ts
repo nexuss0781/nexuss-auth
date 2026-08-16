@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hashToken } from './crypto.js';
 import { createAuthApp } from './server.js';
-import type { Database, OAuthProfile, OAuthStateRecord, ProjectRecord, SessionRecord, UserRecord } from './types.js';
+import type { ApiTokenRecord, Database, OAuthProfile, OAuthStateRecord, ProjectRecord, SessionRecord, UserRecord } from './types.js';
 
 class MemoryDatabase implements Database {
   projects = new Map<string, ProjectRecord>();
   states = new Map<string, OAuthStateRecord>();
   users = new Map<string, UserRecord>();
   sessions = new Map<string, SessionRecord>();
+  apiTokens = new Map<string, ApiTokenRecord>();
   async close(): Promise<void> {}
   async listProjects(ownerUserId?: string): Promise<ProjectRecord[]> { return [...this.projects.values()].filter((project) => !ownerUserId || project.ownerUserId === ownerUserId); }
   async getProject(projectId: string): Promise<ProjectRecord | null> { return this.projects.get(projectId) ?? null; }
@@ -31,6 +32,11 @@ class MemoryDatabase implements Database {
   async getSession(tokenHash: string): Promise<SessionRecord | null> { return this.sessions.get(tokenHash) ?? null; }
   async getUser(userId: string): Promise<UserRecord | null> { return this.users.get(userId) ?? null; }
   async deleteSession(tokenHash: string): Promise<void> { this.sessions.delete(tokenHash); }
+  async createApiToken(token: ApiTokenRecord): Promise<void> { this.apiTokens.set(token.tokenId, token); }
+  async listApiTokens(userId: string): Promise<ApiTokenRecord[]> { return [...this.apiTokens.values()].filter((token) => token.userId === userId); }
+  async getApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null> { return [...this.apiTokens.values()].find((token) => token.tokenHash === tokenHash && !token.revokedAt) ?? null; }
+  async touchApiToken(tokenId: string): Promise<void> { const token = this.apiTokens.get(tokenId); if (token) token.lastUsedAt = new Date(); }
+  async revokeApiToken(userId: string, tokenId: string): Promise<boolean> { const token = this.apiTokens.get(tokenId); if (!token || token.userId !== userId || token.revokedAt) return false; token.revokedAt = new Date(); return true; }
 }
 
 const config = {
@@ -144,4 +150,32 @@ test('a CLI bearer session can manage and delete only its own project', async ()
   const removed = await app.fetch(new Request('https://auth.example.com/v1/projects/demo', { method: 'DELETE', headers: { authorization: 'Bearer cli-session' } }));
   assert.equal(removed.status, 204);
   assert.equal(await db.getProject('demo'), null);
+});
+
+
+test('a signed-in user can create, use, list, and revoke an API token without exposing its secret', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject({ ...demoProject, ownerUserId: 'owner' });
+  db.users.set('owner', { id: 'owner', email: 'owner@example.com', name: 'Owner', avatarUrl: null });
+  db.sessions.set(hashToken('owner-session'), { tokenHash: hashToken('owner-session'), userId: 'owner', projectId: 'nexuss-dashboard', expiresAt: new Date(Date.now() + 60_000) });
+  const app = createAuthApp(config, db);
+  const create = await app.fetch(new Request('https://auth.example.com/v1/tokens', {
+    method: 'POST',
+    headers: { cookie: 'nex_auth_session=owner-session', 'x-nex-auth-project': 'nexuss-dashboard', 'content-type': 'application/json' },
+    body: JSON.stringify({ label: 'Portfolio CLI' }),
+  }));
+  assert.equal(create.status, 201);
+  const created = await create.json() as { token: string; tokenId: string };
+  assert.match(created.token, /^nxa_/);
+  const listed = await app.fetch(new Request('https://auth.example.com/v1/tokens', { headers: { cookie: 'nex_auth_session=owner-session', 'x-nex-auth-project': 'nexuss-dashboard' } }));
+  assert.equal(listed.status, 200);
+  const listPayload = await listed.json() as { tokens: Array<Record<string, unknown>> };
+  assert.equal(listPayload.tokens[0]?.tokenId, created.tokenId);
+  assert.equal('token' in listPayload.tokens[0]!, false);
+  const projects = await app.fetch(new Request('https://auth.example.com/v1/projects', { headers: { authorization: `Bearer ${created.token}` } }));
+  assert.equal(projects.status, 200);
+  const revoked = await app.fetch(new Request(`https://auth.example.com/v1/tokens/${created.tokenId}`, { method: 'DELETE', headers: { cookie: 'nex_auth_session=owner-session', 'x-nex-auth-project': 'nexuss-dashboard' } }));
+  assert.equal(revoked.status, 204);
+  const rejected = await app.fetch(new Request('https://auth.example.com/v1/projects', { headers: { authorization: `Bearer ${created.token}` } }));
+  assert.equal(rejected.status, 401);
 });

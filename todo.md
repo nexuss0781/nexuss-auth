@@ -169,3 +169,20 @@
 - [x] Implement project list/create/show/rename/delete and provider/icon updates.
 - [x] Implement pull, push, diff, and project-ID output.
 - [x] Add Python packaging, tests, and usage documentation; interactive provider login requires a user account.
+
+
+## PyPI publication
+
+- [x] Build and inspect the Python wheel and source distribution.
+- [x] Authenticate with PyPI and publish `nexuss-auth` 0.1.0.
+- [x] Verify installation from PyPI in a clean environment.
+
+
+## Per-user API token management
+
+- [x] Audit current database, server, dashboard, SDK, and CLI authentication contracts.
+- [x] Add hashed per-user token persistence with prefix, label, timestamps, and revocation state.
+- [x] Add generate, list, and revoke API routes with session ownership enforcement.
+- [x] Authenticate project management through user API tokens without accepting admin tokens as user tokens.
+- [x] Add dashboard, TypeScript SDK, and PyPI CLI token management commands.
+- [x] Add security tests, update documentation, deploy, and verify production behavior.

@@ -45,9 +45,9 @@ def output(value: Any, as_json: bool = False) -> None:
         print(value)
 
 
-def save_session(token: str, auth_url: str) -> None:
+def save_session(token: str, auth_url: str, mode: str = "session") -> None:
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(json.dumps({"token": token, "authUrl": auth_url.rstrip("/")}), encoding="utf-8")
+    SESSION_FILE.write_text(json.dumps({"token": token, "authUrl": auth_url.rstrip("/"), "mode": mode}), encoding="utf-8")
     try:
         SESSION_FILE.chmod(0o600)
     except OSError:
@@ -61,9 +61,20 @@ def load_session() -> dict[str, str]:
         value = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
         if not value.get("token") or not value.get("authUrl"):
             raise ValueError
-        return {"token": str(value["token"]), "authUrl": str(value["authUrl"])}
+        return {"token": str(value["token"]), "authUrl": str(value["authUrl"]), "mode": str(value.get("mode", "session"))}
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise CliError("The local Nexuss-auth session is invalid. Run `nexuss logout` and then `nexuss login`.") from exc
+
+
+def require_browser_session() -> dict[str, str]:
+    session = load_session()
+    if session.get("mode") != "session":
+        raise CliError("This command requires browser sign-in. Run `nexuss login` first.")
+    return session
+
+
+def save_api_token(token: str, auth_url: str) -> None:
+    save_session(token, auth_url, "api")
 
 
 class Api:
@@ -145,7 +156,7 @@ def login(args: argparse.Namespace) -> None:
     server.handle_request()
     server.server_close()
     if result.get("token"):
-        save_session(result["token"], auth_url)
+        save_session(result["token"], auth_url, "session")
         print("Signed in. Run `nexuss whoami` or `nexuss project list`.")
     else:
         raise CliError("CLI login did not complete.")
@@ -165,6 +176,31 @@ def read_config(path: Path = LOCAL_CONFIG) -> dict[str, Any]:
     if not isinstance(value, dict) or not value.get("projectId"):
         raise CliError("The local project file must contain a projectId.")
     return value
+
+
+def token_command(args: argparse.Namespace) -> None:
+    session = require_browser_session()
+    api = Api(session)
+    if args.token_action == "create":
+        created = api.request("POST", "/v1/tokens", {"label": args.label})
+        output(created, args.json)
+        if not args.json:
+            print("Save the token now; it will not be shown again.")
+        return
+    if args.token_action == "list":
+        output(api.request("GET", "/v1/tokens").get("tokens", []), args.json)
+        return
+    if args.token_action == "revoke":
+        api.request("DELETE", f"/v1/tokens/{urllib.parse.quote(args.id)}")
+        print(f"Revoked token {args.id}.")
+        return
+    if args.token_action == "use":
+        if not args.value.startswith("nxa_"):
+            raise CliError("API tokens must start with nxa_.")
+        save_api_token(args.value, session["authUrl"])
+        print("API token activated for this CLI. Run `nexuss project list` to verify it.")
+        return
+    raise CliError("Unknown token command.")
 
 
 def project_command(args: argparse.Namespace) -> None:
@@ -235,6 +271,12 @@ def build_parser() -> argparse.ArgumentParser:
     login_parser.add_argument("--auth-url", default=None)
     sub.add_parser("logout", help="Remove the local CLI session.")
     sub.add_parser("whoami", help="Show the signed-in Nexuss-auth user.")
+    token = sub.add_parser("token", help="Manage per-user CLI API tokens.")
+    token_sub = token.add_subparsers(dest="token_action", required=True)
+    create_token = token_sub.add_parser("create", help="Generate a token; the secret is shown once."); create_token.add_argument("--label", default="CLI token")
+    token_sub.add_parser("list", help="List token metadata without secrets.")
+    revoke_token = token_sub.add_parser("revoke", help="Revoke one token."); revoke_token.add_argument("--id", required=True)
+    use_token = token_sub.add_parser("use", help="Activate a token in this CLI profile."); use_token.add_argument("--value", required=True)
     project = sub.add_parser("project", help="Manage account-owned projects.")
     project_sub = project.add_subparsers(dest="project_action", required=True)
     project_sub.add_parser("list", help="List your projects.")
@@ -247,6 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     for action in ["pull", "push", "diff"]:
         sync = project_sub.add_parser(action); sync.add_argument("--file", default=str(LOCAL_CONFIG))
     login_parser.set_defaults(handler=login)
+    token.set_defaults(handler=token_command)
     project.set_defaults(handler=project_command)
     return parser
 

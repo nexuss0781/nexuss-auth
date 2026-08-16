@@ -16,3 +16,8 @@ All notable changes to Nexuss-auth and its AI-agent operating package are record
 Added a PyPI-ready `nexuss-auth` Python CLI with browser-based Google or GitHub login, local protected session storage, account-scoped `whoami`, project listing, creation, inspection, rename, deletion, provider configuration, icon configuration, and JSON output for AI agents. Added local `pull`, `diff`, and `push` synchronization commands.
 
 The service now accepts the CLI’s user-session bearer credential for `/v1/me`, logout, and project management, while preserving the separate admin-token boundary for private automation. Project deletion is ownership-checked and returns `204` only after the caller is authorized.
+
+
+## 2026-08-16 — Per-user API tokens
+
+Added account-owned API token management across the Vercel service, dashboard, TypeScript SDK, and PyPI CLI. Users can generate labelled tokens, list safe metadata, revoke tokens, activate a token in the CLI, and use it for project management. The service stores only token hashes, shows the secret once, tracks last use, and keeps admin automation credentials separate.

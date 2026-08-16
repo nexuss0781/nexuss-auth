@@ -279,3 +279,36 @@ The API may return an error object such as:
 ```
 
 Do not expose raw server errors to end users. Record a safe request ID or status code instead.
+
+
+## Per-user API tokens
+
+The signed-in dashboard session may create and revoke user-owned CLI tokens. A token is a user credential, not an administrator credential. The service stores only its hash and returns the secret once at creation time.
+
+### `POST /v1/tokens`
+
+Create a token with a signed-in browser session:
+
+```json
+{"label":"Portfolio CLI"}
+```
+
+The response contains `token`, `tokenId`, `tokenPrefix`, `label`, `createdAt`, and a warning that the secret will not be shown again. Never write the full token to logs, source control, screenshots, or project configuration files.
+
+### `GET /v1/tokens`
+
+List token metadata for the signed-in user. The response contains token IDs, prefixes, labels, creation time, last-use time, and revocation time. It never contains the full secret.
+
+### `DELETE /v1/tokens/:tokenId`
+
+Revoke one token. Only the signed-in owner can revoke it. A revoked token immediately fails project-management requests with `401`.
+
+### Using a token for user-scoped project management
+
+Send the token as a bearer credential:
+
+```http
+Authorization: Bearer nxa_<user-token>
+```
+
+This credential can list, create, inspect, update, and delete only projects owned by the token’s user. It cannot create, list, or revoke API tokens. Token administration requires the signed-in browser session.

@@ -1,5 +1,6 @@
 import pg from 'pg';
 import type {
+  ApiTokenRecord,
   CreateSessionInput,
   Database,
   OAuthProfile,
@@ -211,5 +212,29 @@ export class PostgresDatabase implements Database {
 
   async deleteSession(tokenHash: string): Promise<void> {
     await this.pool.query('DELETE FROM sessions WHERE token_hash = $1', [tokenHash]);
+  }
+
+  async createApiToken(token: ApiTokenRecord): Promise<void> {
+    await this.pool.query('INSERT INTO api_tokens (token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', [token.tokenId, token.userId, token.tokenHash, token.tokenPrefix, token.label, token.createdAt, token.lastUsedAt, token.revokedAt]);
+  }
+
+  async listApiTokens(userId: string): Promise<ApiTokenRecord[]> {
+    const result = await this.pool.query<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; label: string; created_at: Date; last_used_at: Date | null; revoked_at: Date | null }>('SELECT token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE user_id = $1 ORDER BY created_at DESC', [userId]);
+    return result.rows.map((row) => ({ tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, label: row.label, createdAt: row.created_at, lastUsedAt: row.last_used_at, revokedAt: row.revoked_at }));
+  }
+
+  async getApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null> {
+    const result = await this.pool.query<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; label: string; created_at: Date; last_used_at: Date | null; revoked_at: Date | null }>('SELECT token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE token_hash = $1 AND revoked_at IS NULL', [tokenHash]);
+    const row = result.rows[0];
+    return row ? { tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, label: row.label, createdAt: row.created_at, lastUsedAt: row.last_used_at, revokedAt: row.revoked_at } : null;
+  }
+
+  async touchApiToken(tokenId: string): Promise<void> {
+    await this.pool.query('UPDATE api_tokens SET last_used_at = now() WHERE token_id = $1', [tokenId]);
+  }
+
+  async revokeApiToken(userId: string, tokenId: string): Promise<boolean> {
+    const result = await this.pool.query('UPDATE api_tokens SET revoked_at = now() WHERE token_id = $1 AND user_id = $2 AND revoked_at IS NULL', [tokenId, userId]);
+    return result.rowCount === 1;
   }
 }
