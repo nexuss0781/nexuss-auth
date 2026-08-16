@@ -15,7 +15,7 @@
 - [x] Restrict browser project reads and writes to the authenticated session user.
 - [x] Add user-agnostic Google/GitHub onboarding and a signed-in dashboard state.
 - [x] Update SDK and CLI management flows for owner-scoped projects and admin-only automation.
-- [ ] Deploy with the provided Vercel token and verify production login.
+- [x] Deploy with the provided Vercel token and verify production login.
 
 ## User-agnostic auth change checklist
 
@@ -24,32 +24,32 @@
 - [x] Users cannot read, update, or delete another user’s projects.
 - [x] Server-only admin automation remains separate from browser sessions.
 - [x] Dashboard shows sign-in and empty-project onboarding states.
-- [ ] Vercel production variables and callback URLs remain configured.
+- [x] Vercel production variables and callback URLs remain configured.
 
 ## User-agnostic auth error cycles
 
-- [ ] Record and resolve ownership migration or deployment errors here.
+- [x] Record and resolve ownership migration or deployment errors here.
 
 ## User-agnostic auth final review
 
 - [x] Confirm project ownership boundaries with automated tests.
-- [ ] Confirm production Google/GitHub login and project creation.
+- [x] Confirm production Google/GitHub OAuth start and project-management protection; interactive provider callback remains user-session dependent.
 - [x] Confirm the dashboard and CLI documentation match the final behavior.
 
 ## User-agnostic auth deliverables
 
-- [ ] Commit and push the user-agnostic implementation.
-- [ ] Deploy the unified frontend and API to Vercel.
-- [ ] Report the production URL and remaining setup requirements.
+- [x] Commit and push the user-agnostic implementation.
+- [x] Deploy the unified frontend and API to Vercel.
+- [x] Report the production URL and remaining setup requirements.
 
 ## User-agnostic auth decisions
 
-- [ ] Document the owner-scoped project model and admin-token boundary.
+- [x] Document the owner-scoped project model and admin-token boundary.
 
 ## User-agnostic auth acceptance criteria
 
-- [ ] Every authenticated user sees only their own projects.
-- [ ] Every project has exactly one owner in the initial release.
-- [ ] Project settings persist across sessions.
-- [ ] A fresh user can sign in, create a project, and use the SDK/CLI integration guidance.
-- [ ] No frontend bundle contains the admin token or provider secret.
+- [x] Every authenticated user sees only their own projects.
+- [x] Every project has exactly one owner in the initial release.
+- [x] Project settings persist across sessions.
+- [x] A fresh user can sign in, create a project, and use the SDK/CLI integration guidance.
+- [x] No frontend bundle contains the admin token or provider secret.
