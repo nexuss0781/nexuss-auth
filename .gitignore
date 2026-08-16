@@ -6,3 +6,9 @@ dist/
 coverage/
 .DS_Store
 .vercel
+
+# Python CLI build artifacts
+python-cli/build/
+python-cli/*.egg-info/
+python-cli/nexuss_auth_cli/__pycache__/
+tests-python-cli/__pycache__/
