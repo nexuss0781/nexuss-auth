@@ -85,7 +85,7 @@ nexuss project icon --id my-dashboard --icon https://cdn.example/icon.png
 nexuss project delete --id my-dashboard
 ```
 
-Project creation returns the project ID and full public configuration. Use `--json` for AI agents and scripts. Use `nexuss project pull`, `nexuss project diff`, and `nexuss project push` to synchronize a local project file with the cloud record.
+Project creation returns the project ID and full public configuration. Use `--json` for AI agents and scripts. To create a local file from an existing cloud project, run `nexuss project pull --id <project-id> --file nexuss.yaml.json`. Then use `nexuss project diff --file nexuss.yaml.json` and `nexuss project push --file nexuss.yaml.json` to synchronize changes. API tokens are owner-scoped and can manage only projects owned by the token’s user.
 
 Generate a user token from a browser-authenticated CLI session, then activate it for subsequent project commands:
 
@@ -102,7 +102,7 @@ nexuss token list
 nexuss token revoke --id <token-id>
 ```
 
-The full token is shown only once. Store it in the operating system credential store or a protected CI secret. Never commit it, print it in debug logs, or place it in browser code. A user token is limited to that user’s projects; it is not an admin token.
+The full token is shown only once. Store it in the operating system credential store or a protected CI secret. Never commit it, print it in debug logs, or place it in browser code. A user token is limited to that user’s projects, including list, inspect, create, update, and delete operations; it is not an admin token. If it is revoked, activate a replacement token.
 
 ## Private automation CLI
 
