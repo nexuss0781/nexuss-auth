@@ -72,6 +72,7 @@ export interface Database {
   listProjects(ownerUserId?: string): Promise<ProjectRecord[]>;
   getProject(projectId: string): Promise<ProjectRecord | null>;
   upsertProject(project: ProjectRecord): Promise<ProjectRecord>;
+  deleteProject(projectId: string): Promise<void>;
   createOAuthState(state: OAuthStateRecord): Promise<void>;
   consumeOAuthState(stateHash: string): Promise<OAuthStateRecord | null>;
   findOrCreateUser(profile: OAuthProfile): Promise<UserRecord>;

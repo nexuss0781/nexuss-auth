@@ -18,9 +18,19 @@ function redirectWith(url: string, key: string, value: string): string {
   return target.toString();
 }
 
+function isLoopbackRedirect(redirectUri: string): boolean {
+  try {
+    const url = new URL(redirectUri);
+    return url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost');
+  } catch {
+    return false;
+  }
+}
+
 function isAllowedRedirect(project: ProjectRecord, redirectUri: string): boolean {
   try {
     const requested = new URL(redirectUri);
+    if (project.projectId === 'nexuss-dashboard' && isLoopbackRedirect(redirectUri)) return true;
     return project.allowedRedirectUris.some((allowed) => {
       try {
         const candidate = new URL(allowed);
@@ -132,11 +142,16 @@ function adminAuthorized(request: Request, config: ServerConfig): boolean {
   return Boolean(config.adminToken && token && safeEqual(token, config.adminToken));
 }
 
+function sessionTokenFromRequest(request: Request, config: ServerConfig): string | null {
+  const bearer = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
+  return bearer || parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName] || null;
+}
+
 type ManagementIdentity = { kind: 'admin' } | { kind: 'user'; userId: string };
 
 async function managementIdentity(request: Request, config: ServerConfig, db: Database): Promise<ManagementIdentity | null> {
   if (adminAuthorized(request, config)) return { kind: 'admin' };
-  const sessionToken = parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName];
+  const sessionToken = sessionTokenFromRequest(request, config);
   if (!sessionToken) return null;
   const session = await db.getSession(hashToken(sessionToken));
   return session ? { kind: 'user', userId: session.userId } : null;
@@ -163,7 +178,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
       const url = new URL(request.url);
       const projectId = request.headers.get('x-nex-auth-project') || url.searchParams.get('project_id');
       let project = projectId ? await db.getProject(projectId) : null;
-      if (projectId === 'nexuss-dashboard' && url.pathname.startsWith('/oauth/start/')) {
+      if (projectId === 'nexuss-dashboard') {
         // Keep the control-plane project aligned with the canonical deployment URL.
         project = await db.upsertProject(systemDashboardProject(config));
       }
@@ -222,7 +237,9 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           return new Response(null, {
             status: 302,
             headers: {
-              location: redirectWith(stateRecord.redirectUri, 'nex_auth', 'success'),
+              location: isLoopbackRedirect(stateRecord.redirectUri)
+                ? redirectWith(redirectWith(stateRecord.redirectUri, 'nex_auth', 'success'), 'session_token', sessionToken)
+                : redirectWith(stateRecord.redirectUri, 'nex_auth', 'success'),
               'set-cookie': serializeCookie(config.cookieName, sessionToken, { secure, maxAge: config.sessionTtlSeconds }),
               'referrer-policy': 'no-referrer',
             },
@@ -231,7 +248,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
 
         if (url.pathname === '/v1/me' && request.method === 'GET') {
           if (!projectId || !project) return jsonResponse({ error: 'project_required' }, 400, headers);
-          const sessionToken = parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName];
+          const sessionToken = sessionTokenFromRequest(request, config);
           if (!sessionToken) return jsonResponse({ user: null }, 200, headers);
           let tokenHash: string;
           try {
@@ -263,7 +280,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
         }
 
         if (url.pathname === '/v1/logout' && request.method === 'POST') {
-          const sessionToken = parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName];
+          const sessionToken = sessionTokenFromRequest(request, config);
           if (sessionToken) await db.deleteSession(hashToken(sessionToken));
           const secure = new URL(config.publicUrl).protocol === 'https:';
           return new Response(null, {
@@ -299,6 +316,17 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const managedProject = await db.getProject(managedProjectId);
           if (!managedProject || (identity.kind === 'user' && managedProject.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_not_found' }, 404, headers);
           return jsonResponse(managedProject, 200, headers);
+        }
+
+        if (projectRoute && request.method === 'DELETE') {
+          const identity = await managementIdentity(request, config, db);
+          if (!identity) return jsonResponse({ error: 'unauthorized' }, 401, headers);
+          const managedProjectId = projectRoute[1];
+          if (!managedProjectId) return jsonResponse({ error: 'project_not_found' }, 404, headers);
+          const existing = await db.getProject(managedProjectId);
+          if (!existing || (identity.kind === 'user' && existing.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_not_found' }, 404, headers);
+          await db.deleteProject(managedProjectId);
+          return new Response(null, { status: 204, headers });
         }
 
         if (projectRoute && request.method === 'PATCH') {

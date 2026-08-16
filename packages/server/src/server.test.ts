@@ -13,6 +13,7 @@ class MemoryDatabase implements Database {
   async listProjects(ownerUserId?: string): Promise<ProjectRecord[]> { return [...this.projects.values()].filter((project) => !ownerUserId || project.ownerUserId === ownerUserId); }
   async getProject(projectId: string): Promise<ProjectRecord | null> { return this.projects.get(projectId) ?? null; }
   async upsertProject(project: ProjectRecord): Promise<ProjectRecord> { this.projects.set(project.projectId, project); return project; }
+  async deleteProject(projectId: string): Promise<void> { this.projects.delete(projectId); }
   async createOAuthState(state: OAuthStateRecord): Promise<void> { this.states.set(state.stateHash, state); }
   async consumeOAuthState(stateHash: string): Promise<OAuthStateRecord | null> {
     const state = this.states.get(stateHash) ?? null;
@@ -128,4 +129,19 @@ test('an authenticated user can manage only their own projects without an admin 
     headers: { cookie: 'nex_auth_session=owner-session' },
   }));
   assert.equal(forbidden.status, 404);
+});
+
+
+test('a CLI bearer session can manage and delete only its own project', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject({ ...demoProject, ownerUserId: 'owner' });
+  db.users.set('owner', { id: 'owner', email: 'owner@example.com', name: 'Owner', avatarUrl: null });
+  db.sessions.set(hashToken('cli-session'), { tokenHash: hashToken('cli-session'), userId: 'owner', projectId: 'nexuss-dashboard', expiresAt: new Date(Date.now() + 60_000) });
+  const app = createAuthApp(config, db);
+  const me = await app.fetch(new Request('https://auth.example.com/v1/me?project_id=nexuss-dashboard', { headers: { authorization: 'Bearer cli-session' } }));
+  assert.equal(me.status, 200);
+  assert.equal((await me.json()).user.id, 'owner');
+  const removed = await app.fetch(new Request('https://auth.example.com/v1/projects/demo', { method: 'DELETE', headers: { authorization: 'Bearer cli-session' } }));
+  assert.equal(removed.status, 204);
+  assert.equal(await db.getProject('demo'), null);
 });

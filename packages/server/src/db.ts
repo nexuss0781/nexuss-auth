@@ -91,6 +91,10 @@ export class PostgresDatabase implements Database {
     return project;
   }
 
+  async deleteProject(projectId: string): Promise<void> {
+    await this.pool.query('DELETE FROM projects WHERE project_id = $1', [projectId]);
+  }
+
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.pool.query(
       `INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, expires_at)
