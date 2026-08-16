@@ -94,6 +94,6 @@
 
 ## Production visual parity
 
-- [ ] Compare deployed and preview hero assets and visual treatment.
-- [ ] Strengthen the hero effect so production renders the same first impression.
-- [ ] Redeploy and verify the live landing page visually.
+- [x] Compare deployed and preview hero assets and visual treatment.
+- [x] Strengthen the hero effect so production renders the same first impression.
+- [x] Redeploy and verify the live landing page visually.

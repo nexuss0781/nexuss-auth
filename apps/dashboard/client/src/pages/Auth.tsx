@@ -2,8 +2,8 @@
 import { ArrowLeft, ArrowUpRight, Github, LockKeyhole } from "lucide-react";
 import { Link } from "wouter";
 
-const logoUrl = "/brand/nexuss-auth-orbit-logo.png";
-const authUrl = "/brand/nexuss-auth-provider-field.png";
+const logoUrl = "/manus-storage/nexuss-auth-orbit-logo_a2772bbd.png";
+const authUrl = "/manus-storage/nexuss-auth-provider-field_507db627.png";
 
 export default function Auth() {
   const start = (provider: "google" | "github") => { window.location.href = `/oauth/start/${provider}?project_id=nexuss-dashboard&redirect_uri=${encodeURIComponent(window.location.origin + "/dashboard")}`; };
