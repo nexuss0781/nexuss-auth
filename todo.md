@@ -97,3 +97,8 @@
 - [x] Compare deployed and preview hero assets and visual treatment.
 - [x] Strengthen the hero effect so production renders the same first impression.
 - [x] Redeploy and verify the live landing page visually.
+
+## Google provider mark
+
+- [ ] Add an official multicolor Google G asset to the authorization CTA.
+- [ ] Verify the Google CTA and redeploy the production auth page.
