@@ -105,5 +105,14 @@
 
 ## Auth vertical balance
 
-- [ ] Move the authorization panel upward slightly and equalize visible space above and below it.
-- [ ] Verify the balanced auth composition and redeploy production.
+- [x] Move the authorization panel upward slightly and equalize visible space above and below it.
+- [x] Verify the balanced auth composition and redeploy production.
+
+## Signed-in workspace polish
+
+- [ ] Replace plain loading copy with a branded loading effect.
+- [ ] Fix the production font 404 and `/me` 500 resource errors.
+- [ ] Move signed-in avatar, display name, and email into the bottom profile card below dismissal guidance.
+- [ ] Rename the main signed-in view to Dashboard.
+- [ ] Add a Projects sidebar view with populated and polished empty states.
+- [ ] Verify responsive behavior, build, and production smoke tests.
