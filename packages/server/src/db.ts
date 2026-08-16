@@ -15,6 +15,7 @@ type Queryable = { query: pg.Pool['query'] };
 
 type ProjectRow = {
   project_id: string;
+  owner_user_id: string | null;
   name: string;
   homepage_url: string;
   description: string;
@@ -28,6 +29,7 @@ type ProjectRow = {
 function projectFromRow(row: ProjectRow): ProjectRecord {
   return {
     projectId: row.project_id,
+    ownerUserId: row.owner_user_id,
     name: row.name,
     homepageUrl: row.homepage_url,
     description: row.description,
@@ -50,16 +52,19 @@ export class PostgresDatabase implements Database {
     await this.pool.end();
   }
 
-  async listProjects(): Promise<ProjectRecord[]> {
+  async listProjects(ownerUserId?: string): Promise<ProjectRecord[]> {
     const result = await this.pool.query<ProjectRow>(
-      'SELECT project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects ORDER BY created_at DESC, project_id ASC',
+      ownerUserId
+        ? 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE owner_user_id = $1 ORDER BY created_at DESC, project_id ASC'
+        : 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects ORDER BY created_at DESC, project_id ASC',
+      ownerUserId ? [ownerUserId] : [],
     );
     return result.rows.map(projectFromRow);
   }
 
   async getProject(projectId: string): Promise<ProjectRecord | null> {
     const result = await this.pool.query<ProjectRow>(
-      'SELECT project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE project_id = $1',
+      'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE project_id = $1',
       [projectId],
     );
     const row = result.rows[0];
@@ -68,9 +73,10 @@ export class PostgresDatabase implements Database {
 
   async upsertProject(project: ProjectRecord): Promise<ProjectRecord> {
     await this.pool.query(
-      `INSERT INTO projects (project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO projects (project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (project_id) DO UPDATE SET
+         owner_user_id = COALESCE(EXCLUDED.owner_user_id, projects.owner_user_id),
          name = EXCLUDED.name,
          homepage_url = EXCLUDED.homepage_url,
          description = EXCLUDED.description,
@@ -80,7 +86,7 @@ export class PostgresDatabase implements Database {
          enabled_providers = EXCLUDED.enabled_providers,
          status = EXCLUDED.status,
          updated_at = now()`,
-      [project.projectId, project.name, project.homepageUrl, project.description, project.avatarUrl, project.allowedRedirectUris, project.allowedOrigins, project.enabledProviders, project.status],
+      [project.projectId, project.ownerUserId, project.name, project.homepageUrl, project.description, project.avatarUrl, project.allowedRedirectUris, project.allowedOrigins, project.enabledProviders, project.status],
     );
     return project;
   }

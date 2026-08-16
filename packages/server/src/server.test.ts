@@ -10,7 +10,7 @@ class MemoryDatabase implements Database {
   users = new Map<string, UserRecord>();
   sessions = new Map<string, SessionRecord>();
   async close(): Promise<void> {}
-  async listProjects(): Promise<ProjectRecord[]> { return [...this.projects.values()]; }
+  async listProjects(ownerUserId?: string): Promise<ProjectRecord[]> { return [...this.projects.values()].filter((project) => !ownerUserId || project.ownerUserId === ownerUserId); }
   async getProject(projectId: string): Promise<ProjectRecord | null> { return this.projects.get(projectId) ?? null; }
   async upsertProject(project: ProjectRecord): Promise<ProjectRecord> { this.projects.set(project.projectId, project); return project; }
   async createOAuthState(state: OAuthStateRecord): Promise<void> { this.states.set(state.stateHash, state); }
@@ -48,6 +48,7 @@ const config = {
 
 const demoProject: ProjectRecord = {
   projectId: 'demo',
+  ownerUserId: null,
   name: 'Demo',
   homepageUrl: 'https://demo.example.com',
   description: 'Demo project',
@@ -111,15 +112,20 @@ test('admin can list and update provider configuration for a project', async () 
   assert.equal(rejected.status, 400);
 });
 
-test('an allowlisted owner session can manage projects without an admin bearer token', async () => {
+test('an authenticated user can manage only their own projects without an admin bearer token', async () => {
   const db = new MemoryDatabase();
-  await db.upsertProject(demoProject);
+  await db.upsertProject({ ...demoProject, ownerUserId: 'owner' });
+  await db.upsertProject({ ...demoProject, projectId: 'other', name: 'Other', ownerUserId: 'other-user' });
   db.users.set('owner', { id: 'owner', email: 'owner@example.com', name: 'Owner', avatarUrl: null });
-  db.sessions.set(hashToken('owner-session'), { tokenHash: hashToken('owner-session'), userId: 'owner', projectId: 'demo', expiresAt: new Date(Date.now() + 60_000) });
-  const app = createAuthApp({ ...config, adminEmails: ['owner@example.com'] }, db);
-  const result = await app.fetch(new Request('https://auth.example.com/v1/projects?project_id=demo', {
-    headers: { cookie: 'nex_auth_session=owner-session', 'x-nex-auth-project': 'demo' },
+  db.sessions.set(hashToken('owner-session'), { tokenHash: hashToken('owner-session'), userId: 'owner', projectId: 'nexuss-dashboard', expiresAt: new Date(Date.now() + 60_000) });
+  const app = createAuthApp(config, db);
+  const result = await app.fetch(new Request('https://auth.example.com/v1/projects', {
+    headers: { cookie: 'nex_auth_session=owner-session' },
   }));
   assert.equal(result.status, 200);
-  assert.equal((await result.json()).projects[0].projectId, 'demo');
+  assert.deepEqual((await result.json()).projects.map((project: ProjectRecord) => project.projectId), ['demo']);
+  const forbidden = await app.fetch(new Request('https://auth.example.com/v1/projects/other', {
+    headers: { cookie: 'nex_auth_session=owner-session' },
+  }));
+  assert.equal(forbidden.status, 404);
 });

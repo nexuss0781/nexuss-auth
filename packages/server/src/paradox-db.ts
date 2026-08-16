@@ -13,6 +13,7 @@ import type {
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS projects (
     project_id TEXT PRIMARY KEY,
+    owner_user_id TEXT,
     name TEXT NOT NULL,
     homepage_url TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
@@ -63,6 +64,7 @@ const schemaStatements = [
 ];
 
 const projectMigrationStatements = [
+  "ALTER TABLE projects ADD COLUMN owner_user_id TEXT",
   "ALTER TABLE projects ADD COLUMN homepage_url TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT ''",
   'ALTER TABLE projects ADD COLUMN avatar_url TEXT',
@@ -102,6 +104,7 @@ function jsonProviders(value: string): ('google' | 'github')[] {
 
 type ProjectRow = {
   project_id: string;
+  owner_user_id: string | null;
   name: string;
   homepage_url: string;
   description: string;
@@ -115,6 +118,7 @@ type ProjectRow = {
 function projectFromRow(row: ProjectRow): ProjectRecord {
   return {
     projectId: row.project_id,
+    ownerUserId: row.owner_user_id,
     name: row.name,
     homepageUrl: row.homepage_url,
     description: row.description,
@@ -179,13 +183,15 @@ export class ParadoxDatabase implements Database {
     }
   }
 
-  async listProjects(): Promise<ProjectRecord[]> {
-    return this.run((db) => rows<ProjectRow>(db, 'SELECT project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects ORDER BY created_at DESC, project_id ASC').map(projectFromRow));
+  async listProjects(ownerUserId?: string): Promise<ProjectRecord[]> {
+    return this.run((db) => rows<ProjectRow>(db, ownerUserId
+      ? 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE owner_user_id = ? ORDER BY created_at DESC, project_id ASC'
+      : 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects ORDER BY created_at DESC, project_id ASC', ownerUserId ? [ownerUserId] : []).map(projectFromRow));
   }
 
   async getProject(projectId: string): Promise<ProjectRecord | null> {
     return this.run((db) => {
-      const row = one<ProjectRow>(db, 'SELECT project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE project_id = ?', [projectId]);
+      const row = one<ProjectRow>(db, 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE project_id = ?', [projectId]);
       return row ? projectFromRow(row) : null;
     });
   }
@@ -193,10 +199,10 @@ export class ParadoxDatabase implements Database {
   async upsertProject(project: ProjectRecord): Promise<ProjectRecord> {
     return this.run((db) => {
       db.execute(
-        `INSERT INTO projects (project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(project_id) DO UPDATE SET name = excluded.name, homepage_url = excluded.homepage_url, description = excluded.description, avatar_url = excluded.avatar_url, allowed_redirect_uris = excluded.allowed_redirect_uris, allowed_origins = excluded.allowed_origins, enabled_providers = excluded.enabled_providers, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
-        [project.projectId, project.name, project.homepageUrl, project.description, project.avatarUrl, JSON.stringify(project.allowedRedirectUris), JSON.stringify(project.allowedOrigins), JSON.stringify(project.enabledProviders), project.status],
+        `INSERT INTO projects (project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id) DO UPDATE SET owner_user_id = COALESCE(excluded.owner_user_id, projects.owner_user_id), name = excluded.name, homepage_url = excluded.homepage_url, description = excluded.description, avatar_url = excluded.avatar_url, allowed_redirect_uris = excluded.allowed_redirect_uris, allowed_origins = excluded.allowed_origins, enabled_providers = excluded.enabled_providers, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
+        [project.projectId, project.ownerUserId, project.name, project.homepageUrl, project.description, project.avatarUrl, JSON.stringify(project.allowedRedirectUris), JSON.stringify(project.allowedOrigins), JSON.stringify(project.enabledProviders), project.status],
       );
       return project;
     });

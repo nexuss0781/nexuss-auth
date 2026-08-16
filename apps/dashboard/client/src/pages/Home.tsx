@@ -64,30 +64,17 @@ function projectFromManaged(project: ManagedProject): Project {
   };
 }
 
-const initialProjects: Project[] = [
-  {
-    id: "nexuss-auth",
-    name: "Nexuss-auth",
-    homepage: "https://nexuss-auth.vercel.app",
-    redirect: "https://nexuss-auth.vercel.app/oauth/callback",
-    description: "The central identity system for portable, agent-native authentication.",
-    initials: "NA",
-    avatarUrl: null,
-    enabledProviders: ["google", "github"],
-    status: "active",
-  },
-  {
-    id: "customer-dashboard",
-    name: "Customer Dashboard",
-    homepage: "https://dashboard.example.com",
-    redirect: "https://dashboard.example.com/auth/callback",
-    description: "Customer-facing access for a product dashboard.",
-    initials: "CD",
-    avatarUrl: null,
-    enabledProviders: ["google", "github"],
-    status: "active",
-  },
-];
+const emptyProject: Project = {
+  id: "",
+  name: "No project selected",
+  homepage: "",
+  redirect: "",
+  description: "Create your first project to configure its identity surface.",
+  initials: "--",
+  avatarUrl: null,
+  enabledProviders: [],
+  status: "active",
+};
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <p className="mb-3 font-mono text-[10px] font-medium uppercase tracking-[0.18em] text-white/40">{children}</p>;
@@ -99,19 +86,22 @@ function ProviderToggle({
   active,
   onChange,
   icon,
+  disabled = false,
 }: {
   label: string;
   detail: string;
   active: boolean;
   onChange: () => void;
   icon: React.ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={onChange}
       aria-pressed={active}
-      className={`group flex w-full items-center gap-4 rounded-2xl border p-4 text-left transition duration-200 active:scale-[0.99] ${
+      className={`group flex w-full items-center gap-4 rounded-2xl border p-4 text-left transition duration-200 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 ${
         active ? "border-white/25 bg-white/[0.08]" : "border-white/[0.08] bg-white/[0.025] hover:border-white/20"
       }`}
     >
@@ -128,8 +118,8 @@ function ProviderToggle({
 }
 
 export default function Home() {
-  const [projects, setProjects] = useState<Project[]>(initialProjects);
-  const [selectedId, setSelectedId] = useState(initialProjects[0].id);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedId, setSelectedId] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [integrationMode, setIntegrationMode] = useState<"SDK" | "CLI" | "API">("SDK");
@@ -137,10 +127,11 @@ export default function Home() {
   const [apiState, setApiState] = useState<"loading" | "connected" | "unauthorized" | "offline">("loading");
   const [saving, setSaving] = useState(false);
 
-  const selected = useMemo(() => projects.find((project) => project.id === selectedId) ?? projects[0], [projects, selectedId]);
+  const selected = useMemo(() => projects.find((project) => project.id === selectedId) ?? projects[0] ?? emptyProject, [projects, selectedId]);
   const [details, setDetails] = useState({ name: selected.name, homepage: selected.homepage, redirect: selected.redirect, description: selected.description });
   const googleEnabled = selected.enabledProviders.includes("google");
   const githubEnabled = selected.enabledProviders.includes("github");
+  const hasProject = Boolean(selected.id);
 
   useEffect(() => {
     void listManagedProjects()
@@ -167,6 +158,10 @@ export default function Home() {
   const activeCode = integrationMode === "CLI" ? codeByMode.CLI.replace(/\n\+/g, "\n") : codeByMode[integrationMode];
 
   const saveProject = async () => {
+    if (!hasProject) {
+      toast.info("Create a project before saving settings.");
+      return;
+    }
     setSaving(true);
     try {
       const updated = await updateManagedProject(selected.id, {
@@ -186,6 +181,10 @@ export default function Home() {
   };
 
   const toggleProvider = async (provider: Provider) => {
+    if (!hasProject) {
+      toast.info("Create a project before changing providers.");
+      return;
+    }
     const enabledProviders = selected.enabledProviders.includes(provider) ? selected.enabledProviders.filter((item) => item !== provider) : [...selected.enabledProviders, provider];
     setSaving(true);
     try {
@@ -318,9 +317,13 @@ export default function Home() {
             </div>
             <div className="flex flex-wrap gap-2">
               <button onClick={() => copy(selected.id, "Project ID")} className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/12 px-3 text-xs text-white/70 transition hover:bg-white/10"><Clipboard className="size-3.5" /> Copy ID</button>
-              <button onClick={() => void saveProject()} disabled={saving} className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/12 px-3 text-xs text-white/70 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"><Check className="size-3.5" /> {saving ? "Saving" : "Save project"}</button>
+              <button onClick={() => void saveProject()} disabled={saving || !hasProject} className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/12 px-3 text-xs text-white/70 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"><Check className="size-3.5" /> {saving ? "Saving" : "Save project"}</button>
             </div>
           </section>
+
+          {apiState === "unauthorized" && <section className="mt-8 border border-white/15 bg-white/[0.045] p-5 sm:p-6"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><SectionLabel>Owner access</SectionLabel><h2 className="text-xl font-bold tracking-[-0.04em]">Sign in to open your control plane.</h2><p className="mt-1 max-w-xl text-sm leading-6 text-white/50">Your projects are private to your account. Continue with Google or GitHub to create and manage your own projects.</p></div><div className="flex shrink-0 gap-2"><Button onClick={() => beginDashboardSignIn("google")} className="bg-white text-black hover:bg-white/90">Continue with Google</Button><Button onClick={() => beginDashboardSignIn("github")} variant="outline" className="border-white/20 bg-transparent text-white hover:bg-white/10">GitHub</Button></div></div></section>}
+          {apiState === "connected" && projects.length === 0 && <section className="mt-8 border border-dashed border-white/20 bg-white/[0.025] p-5 sm:p-6"><SectionLabel>Empty workspace</SectionLabel><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="text-xl font-bold tracking-[-0.04em]">No projects yet.</h2><p className="mt-1 text-sm leading-6 text-white/50">Create your first project and Nexuss-auth will assign it to your signed-in account automatically.</p></div><Button onClick={() => setNewProjectOpen(true)} className="bg-white text-black hover:bg-white/90"><CirclePlus className="mr-1.5 size-4" /> Create project</Button></div></section>}
+          {apiState === "offline" && <section className="mt-8 border border-white/15 bg-white/[0.045] p-5"><SectionLabel>Control plane unavailable</SectionLabel><p className="text-sm text-white/60">The dashboard could not reach Nexuss-auth. Check the deployment URL and try again.</p></section>}
 
           <section className="mt-8 overflow-hidden rounded-[18px] border border-white/[0.14] bg-[#0b0b0b]">
             <div className="relative min-h-[250px] overflow-hidden px-6 py-7 sm:px-9 sm:py-9">
@@ -355,8 +358,8 @@ export default function Home() {
                   <img src={providerFieldUrl} alt="Abstract provider signal paths" className="hidden h-16 w-24 rounded-xl object-cover opacity-80 sm:block" />
                 </div>
                 <div className="mt-7 grid gap-3 md:grid-cols-2">
-                  <ProviderToggle label="Google" detail="Default provider · OAuth 2.0" active={googleEnabled} onChange={() => void toggleProvider("google")} icon={<span className="font-bold">G</span>} />
-                  <ProviderToggle label="GitHub" detail="Default provider · OAuth 2.0" active={githubEnabled} onChange={() => void toggleProvider("github")} icon={<Github className="size-5" />} />
+                  <ProviderToggle disabled={!hasProject || saving} label="Google" detail="Default provider · OAuth 2.0" active={googleEnabled} onChange={() => void toggleProvider("google")} icon={<span className="font-bold">G</span>} />
+                  <ProviderToggle disabled={!hasProject || saving} label="GitHub" detail="Default provider · OAuth 2.0" active={githubEnabled} onChange={() => void toggleProvider("github")} icon={<Github className="size-5" />} />
                 </div>
                 <button type="button" onClick={() => setAdvancedOpen((open) => !open)} className="mt-6 flex w-full items-center justify-between border-t border-white/10 pt-5 text-left text-xs font-medium text-white/60 transition hover:text-white"><span className="flex items-center gap-2"><Settings2 className="size-4" /> Advanced provider controls</span>{advancedOpen ? <X className="size-4" /> : <Plus className="size-4" />}</button>
                 {advancedOpen && <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-4 text-sm text-white/55">Scope restrictions, account-linking rules, custom OIDC providers, and environment overrides will appear here. The default configuration remains intentionally small.</div>}

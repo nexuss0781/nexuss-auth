@@ -68,7 +68,7 @@ function projectFromBody(body: Record<string, unknown>, existing?: ProjectRecord
   const origins = allowedOrigins && allowedOrigins.length > 0 ? allowedOrigins : [...new Set(allowedRedirectUris.map((uri) => new URL(uri).origin))];
   if (origins.some((origin) => !validHttpUrl(origin) || new URL(origin).pathname !== '/')) return null;
   if (avatarUrl && !validHttpUrl(avatarUrl)) return null;
-  return { projectId, name, homepageUrl, description, avatarUrl, allowedRedirectUris, allowedOrigins: origins, enabledProviders, status };
+  return { ownerUserId: existing?.ownerUserId ?? null, projectId, name, homepageUrl, description, avatarUrl, allowedRedirectUris, allowedOrigins: origins, enabledProviders, status };
 }
 
 function callbackUri(config: ServerConfig): string {
@@ -132,15 +132,29 @@ function adminAuthorized(request: Request, config: ServerConfig): boolean {
   return Boolean(config.adminToken && token && safeEqual(token, config.adminToken));
 }
 
-async function managementAuthorized(request: Request, config: ServerConfig, db: Database): Promise<boolean> {
-  if (adminAuthorized(request, config)) return true;
-  if (!config.adminEmails || config.adminEmails.length === 0) return false;
+type ManagementIdentity = { kind: 'admin' } | { kind: 'user'; userId: string };
+
+async function managementIdentity(request: Request, config: ServerConfig, db: Database): Promise<ManagementIdentity | null> {
+  if (adminAuthorized(request, config)) return { kind: 'admin' };
   const sessionToken = parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName];
-  if (!sessionToken) return false;
+  if (!sessionToken) return null;
   const session = await db.getSession(hashToken(sessionToken));
-  if (!session) return false;
-  const user = await db.getUser(session.userId);
-  return Boolean(user?.email && config.adminEmails.includes(user.email.toLowerCase()));
+  return session ? { kind: 'user', userId: session.userId } : null;
+}
+
+function systemDashboardProject(config: ServerConfig): ProjectRecord {
+  return {
+    projectId: 'nexuss-dashboard',
+    ownerUserId: null,
+    name: 'Nexuss-auth Control Plane',
+    homepageUrl: config.publicUrl,
+    description: 'User-facing project management for Nexuss-auth.',
+    avatarUrl: null,
+    allowedRedirectUris: [config.publicUrl],
+    allowedOrigins: [new URL(config.publicUrl).origin],
+    enabledProviders: ['google', 'github'],
+    status: 'active',
+  };
 }
 
 export function createAuthApp(config: ServerConfig, db: Database): { fetch(request: Request): Promise<Response> } {
@@ -148,7 +162,10 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
       const projectId = request.headers.get('x-nex-auth-project') || url.searchParams.get('project_id');
-      const project = projectId ? await db.getProject(projectId) : null;
+      let project = projectId ? await db.getProject(projectId) : null;
+      if (!project && projectId === 'nexuss-dashboard' && url.pathname.startsWith('/oauth/start/')) {
+        project = await db.upsertProject(systemDashboardProject(config));
+      }
       const headers = {
         ...corsHeaders(request.headers.get('origin'), project),
         'cache-control': 'no-store',
@@ -232,35 +249,44 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
         }
 
         if (url.pathname === '/v1/projects' && request.method === 'GET') {
-          if (!await managementAuthorized(request, config, db)) return jsonResponse({ error: 'unauthorized' }, 401, headers);
-          return jsonResponse({ projects: await db.listProjects() }, 200, headers);
+          const identity = await managementIdentity(request, config, db);
+          if (!identity) return jsonResponse({ error: 'unauthorized' }, 401, headers);
+          return jsonResponse({ projects: await db.listProjects(identity.kind === 'user' ? identity.userId : undefined) }, 200, headers);
         }
 
         if (url.pathname === '/v1/projects' && request.method === 'POST') {
-          if (!await managementAuthorized(request, config, db)) return jsonResponse({ error: 'unauthorized' }, 401, headers);
-          const nextProject = projectFromBody(await jsonBody(request));
+          const identity = await managementIdentity(request, config, db);
+          if (!identity) return jsonResponse({ error: 'unauthorized' }, 401, headers);
+          const body = await jsonBody(request);
+          const nextProject = projectFromBody(body);
           if (!nextProject) return jsonResponse({ error: 'invalid_project_configuration' }, 400, headers);
-          return jsonResponse(await db.upsertProject(nextProject), 201, headers);
+          const existing = await db.getProject(nextProject.projectId);
+          if (existing && (identity.kind === 'user' ? existing.ownerUserId !== identity.userId : false)) return jsonResponse({ error: 'project_id_unavailable' }, 409, headers);
+          const ownedProject = { ...nextProject, ownerUserId: identity.kind === 'user' ? identity.userId : existing?.ownerUserId ?? null };
+          return jsonResponse(await db.upsertProject(ownedProject), 201, headers);
         }
 
         const projectRoute = url.pathname.match(/^\/v1\/projects\/([a-z0-9-]{1,63})$/);
         if (projectRoute && request.method === 'GET') {
-          if (!await managementAuthorized(request, config, db)) return jsonResponse({ error: 'unauthorized' }, 401, headers);
+          const identity = await managementIdentity(request, config, db);
+          if (!identity) return jsonResponse({ error: 'unauthorized' }, 401, headers);
           const managedProjectId = projectRoute[1];
           if (!managedProjectId) return jsonResponse({ error: 'project_not_found' }, 404, headers);
           const managedProject = await db.getProject(managedProjectId);
-          return managedProject ? jsonResponse(managedProject, 200, headers) : jsonResponse({ error: 'project_not_found' }, 404, headers);
+          if (!managedProject || (identity.kind === 'user' && managedProject.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_not_found' }, 404, headers);
+          return jsonResponse(managedProject, 200, headers);
         }
 
         if (projectRoute && request.method === 'PATCH') {
-          if (!await managementAuthorized(request, config, db)) return jsonResponse({ error: 'unauthorized' }, 401, headers);
+          const identity = await managementIdentity(request, config, db);
+          if (!identity) return jsonResponse({ error: 'unauthorized' }, 401, headers);
           const managedProjectId = projectRoute[1];
           if (!managedProjectId) return jsonResponse({ error: 'project_not_found' }, 404, headers);
           const existing = await db.getProject(managedProjectId);
-          if (!existing) return jsonResponse({ error: 'project_not_found' }, 404, headers);
+          if (!existing || (identity.kind === 'user' && existing.ownerUserId !== identity.userId)) return jsonResponse({ error: 'project_not_found' }, 404, headers);
           const nextProject = projectFromBody(await jsonBody(request), existing);
           if (!nextProject || nextProject.projectId !== existing.projectId) return jsonResponse({ error: 'invalid_project_configuration' }, 400, headers);
-          return jsonResponse(await db.upsertProject(nextProject), 200, headers);
+          return jsonResponse(await db.upsertProject({ ...nextProject, ownerUserId: existing.ownerUserId }), 200, headers);
         }
 
         return jsonResponse({ error: 'not_found' }, 404, headers);

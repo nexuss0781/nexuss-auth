@@ -47,6 +47,6 @@ export function updateManagedProject(projectId: string, updates: Partial<Omit<Ma
 export function beginDashboardSignIn(provider: Provider): void {
   const url = new URL(`/oauth/start/${provider}`, authUrl);
   url.searchParams.set('project_id', dashboardProjectId);
-  url.searchParams.set('redirect_uri', window.location.href);
+  url.searchParams.set('redirect_uri', window.location.origin);
   window.location.assign(url);
 }

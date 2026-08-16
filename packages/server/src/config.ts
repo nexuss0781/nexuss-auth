@@ -24,7 +24,6 @@ export function loadConfig(): ServerConfig {
   }
 
   const adminToken = process.env.NEX_AUTH_ADMIN_TOKEN;
-  const adminEmails = (process.env.NEX_AUTH_ADMIN_EMAILS || '').split(',').map((email) => email.trim().toLowerCase()).filter(Boolean);
   if (process.env.NODE_ENV === 'production' && !adminToken) {
     throw new Error('NEX_AUTH_ADMIN_TOKEN is required in production');
   }
@@ -37,7 +36,6 @@ export function loadConfig(): ServerConfig {
     stateTtlSeconds: positiveInteger('NEX_AUTH_STATE_TTL_SECONDS', 10 * 60),
     cookieName: process.env.NEX_AUTH_COOKIE_NAME || 'nex_auth_session',
     adminToken,
-    adminEmails,
     googleClientId: required('GOOGLE_CLIENT_ID'),
     googleClientSecret: required('GOOGLE_CLIENT_SECRET'),
     githubClientId: required('GITHUB_CLIENT_ID'),
