@@ -233,13 +233,31 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           if (!projectId || !project) return jsonResponse({ error: 'project_required' }, 400, headers);
           const sessionToken = parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName];
           if (!sessionToken) return jsonResponse({ user: null }, 200, headers);
-          const session = await db.getSession(hashToken(sessionToken));
+          let tokenHash: string;
+          try {
+            tokenHash = hashToken(sessionToken);
+          } catch (error) {
+            console.error('Failed to hash dashboard session cookie', error);
+            return jsonResponse({ user: null }, 200, headers);
+          }
+          let session: Awaited<ReturnType<Database['getSession']>>;
+          try {
+            session = await db.getSession(tokenHash);
+          } catch (error) {
+            console.error('Failed to resolve dashboard session', error);
+            return jsonResponse({ user: null }, 200, headers);
+          }
           if (!session || session.projectId !== projectId) return jsonResponse({ user: null }, 200, headers);
           try {
             const user = await db.getUser(session.userId);
+            if (!user) {
+              await db.deleteSession(tokenHash);
+              return jsonResponse({ user: null }, 200, headers);
+            }
             return jsonResponse({ user }, 200, headers);
           } catch (error) {
             console.error('Failed to resolve authenticated user profile', error);
+            try { await db.deleteSession(tokenHash); } catch (cleanupError) { console.error('Failed to clean up invalid dashboard session', cleanupError); }
             return jsonResponse({ user: null }, 200, headers);
           }
         }

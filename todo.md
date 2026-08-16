@@ -110,9 +110,15 @@
 
 ## Signed-in workspace polish
 
-- [ ] Replace plain loading copy with a branded loading effect.
-- [ ] Fix the production font 404 and `/me` 500 resource errors.
-- [ ] Move signed-in avatar, display name, and email into the bottom profile card below dismissal guidance.
-- [ ] Rename the main signed-in view to Dashboard.
-- [ ] Add a Projects sidebar view with populated and polished empty states.
-- [ ] Verify responsive behavior, build, and production smoke tests.
+- [x] Replace plain loading copy with a branded loading effect.
+- [x] Fix the production font 404 and `/me` 500 resource errors.
+- [x] Move signed-in avatar, display name, and email into the bottom profile card below dismissal guidance.
+- [x] Rename the main signed-in view to Dashboard.
+- [x] Add a Projects sidebar view with populated and polished empty states.
+- [x] Verify responsive behavior, build, and production smoke tests.
+
+## Authenticated /v1/me production error
+
+- [ ] Trace the authenticated session and Paradox user lookup path causing the production 500.
+- [ ] Patch stale or malformed session handling so `/v1/me` returns a safe response.
+- [ ] Redeploy and verify authenticated and unauthenticated `/v1/me` behavior.
