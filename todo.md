@@ -119,6 +119,12 @@
 
 ## Authenticated /v1/me production error
 
-- [ ] Trace the authenticated session and Paradox user lookup path causing the production 500.
-- [ ] Patch stale or malformed session handling so `/v1/me` returns a safe response.
-- [ ] Redeploy and verify authenticated and unauthenticated `/v1/me` behavior.
+- [x] Trace the authenticated session and Paradox user lookup path causing the production 500.
+- [x] Patch stale or malformed session handling so `/v1/me` returns a safe response.
+- [x] Redeploy and verify authenticated and unauthenticated `/v1/me` behavior.
+
+## Project avatar upload
+
+- [ ] Add a centered branded avatar upload control above the project creation fields.
+- [ ] Preview the selected image and include it in the project creation payload.
+- [ ] Verify the form and deploy the avatar upload update.
