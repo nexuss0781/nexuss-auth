@@ -5,14 +5,21 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "examples/*"
+    "examples/*",
+    "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w @nex-auth/sdk && npm run build -w @nex-auth/server",
-    "test": "npm run test -w @nex-auth/sdk && npm run test -w @nex-auth/server",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "build": "npm run build -w nexuss-auth && npm run build -w @nex-auth/server && npm run build -w @nex-auth/dashboard",
+    "test": "npm run test -w nexuss-auth && npm run test -w @nex-auth/server",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dashboard:dev": "npm run dev -w @nex-auth/dashboard",
+    "dashboard:build": "npm run build -w @nex-auth/dashboard",
+    "dashboard:typecheck": "npm run typecheck -w @nex-auth/dashboard"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@vercel/node": "^5.10.1"
   }
 }
