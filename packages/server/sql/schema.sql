@@ -2,6 +2,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS projects (
   project_id TEXT PRIMARY KEY,
+  owner_user_id UUID,
   name TEXT NOT NULL,
   homepage_url TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
@@ -14,6 +15,7 @@ CREATE TABLE IF NOT EXISTS projects (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS owner_user_id UUID;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS homepage_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS avatar_url TEXT;
@@ -29,6 +31,15 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+DO $$
+BEGIN
+  ALTER TABLE projects ADD CONSTRAINT projects_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE INDEX IF NOT EXISTS projects_owner_user_id_idx ON projects(owner_user_id);
 
 CREATE TABLE IF NOT EXISTS identities (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

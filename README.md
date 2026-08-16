@@ -75,7 +75,7 @@ Redirect URIs are exact-match allowlisted. Do not use a wildcard in production.
 
 ## Project management API and CLI
 
-The management API supports `GET /v1/projects`, `POST /v1/projects`, `GET /v1/projects/:projectId`, and `PATCH /v1/projects/:projectId`. CLI and server-to-server callers use `NEX_AUTH_ADMIN_TOKEN` as a bearer token. The browser dashboard never receives this token: set `NEX_AUTH_ADMIN_EMAILS` to one or more verified user emails, separated by commas, and those signed-in owners can manage projects through their HTTP-only Nexuss-auth session.
+The management API supports `GET /v1/projects`, `POST /v1/projects`, `GET /v1/projects/:projectId`, and `PATCH /v1/projects/:projectId`. A signed-in user manages projects through their HTTP-only Nexuss-auth session, and every project created by that user is automatically assigned to their user ID. Project list, read, and update operations are owner-scoped, so users cannot access another user’s projects. CLI and server-to-server callers may use `NEX_AUTH_ADMIN_TOKEN` as an automation credential; the browser dashboard never receives this token.
 
 The source package exposes portable project commands after it is built or published:
 
@@ -146,7 +146,6 @@ Set the following Vercel environment variables before deploying:
 ```text
 NEX_AUTH_PUBLIC_URL
 NEX_AUTH_ADMIN_TOKEN
-NEX_AUTH_ADMIN_EMAILS
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 GITHUB_CLIENT_ID

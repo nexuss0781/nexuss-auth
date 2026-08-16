@@ -9,7 +9,6 @@ export interface ServerConfig {
   stateTtlSeconds: number;
   cookieName: string;
   adminToken?: string | undefined;
-  adminEmails?: string[] | undefined;
   googleClientId: string;
   googleClientSecret: string;
   githubClientId: string;
@@ -18,6 +17,7 @@ export interface ServerConfig {
 
 export interface ProjectRecord {
   projectId: string;
+  ownerUserId: string | null;
   name: string;
   homepageUrl: string;
   description: string;
@@ -69,7 +69,7 @@ export interface CreateSessionInput {
 
 export interface Database {
   close(): Promise<void>;
-  listProjects(): Promise<ProjectRecord[]>;
+  listProjects(ownerUserId?: string): Promise<ProjectRecord[]>;
   getProject(projectId: string): Promise<ProjectRecord | null>;
   upsertProject(project: ProjectRecord): Promise<ProjectRecord>;
   createOAuthState(state: OAuthStateRecord): Promise<void>;
