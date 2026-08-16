@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { authorizationUrl, exchangeCode } from './providers.js';
 import { hashToken, jsonResponse, parseCookies, randomToken, serializeCookie, safeEqual } from './crypto.js';
+import { randomUUID } from 'node:crypto';
 import type { Database, ProjectStatus, Provider, ProjectRecord, ServerConfig } from './types.js';
 
 const providers = new Set<Provider>(['google', 'github']);
@@ -147,14 +148,30 @@ function sessionTokenFromRequest(request: Request, config: ServerConfig): string
   return bearer || parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName] || null;
 }
 
-type ManagementIdentity = { kind: 'admin' } | { kind: 'user'; userId: string };
+type ManagementIdentity = { kind: 'admin' } | { kind: 'user'; userId: string } | { kind: 'token'; userId: string; tokenId: string };
+
+type UserIdentity = { kind: 'user' | 'token'; userId: string; tokenId?: string };
 
 async function managementIdentity(request: Request, config: ServerConfig, db: Database): Promise<ManagementIdentity | null> {
   if (adminAuthorized(request, config)) return { kind: 'admin' };
-  const sessionToken = sessionTokenFromRequest(request, config);
-  if (!sessionToken) return null;
-  const session = await db.getSession(hashToken(sessionToken));
-  return session ? { kind: 'user', userId: session.userId } : null;
+  const bearer = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
+  const cookieToken = parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName];
+  if (cookieToken) {
+    const session = await db.getSession(hashToken(cookieToken));
+    if (session) return { kind: 'user', userId: session.userId };
+  }
+  if (!bearer) return null;
+  const session = await db.getSession(hashToken(bearer));
+  if (session) return { kind: 'user', userId: session.userId };
+  const apiToken = await db.getApiTokenByHash(hashToken(bearer));
+  if (!apiToken) return null;
+  await db.touchApiToken(apiToken.tokenId);
+  return { kind: 'token', userId: apiToken.userId, tokenId: apiToken.tokenId };
+}
+
+async function userIdentity(request: Request, config: ServerConfig, db: Database): Promise<UserIdentity | null> {
+  const identity = await managementIdentity(request, config, db);
+  return identity && identity.kind !== 'admin' ? identity : null;
 }
 
 function systemDashboardProject(config: ServerConfig): ProjectRecord {
@@ -248,35 +265,38 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
 
         if (url.pathname === '/v1/me' && request.method === 'GET') {
           if (!projectId || !project) return jsonResponse({ error: 'project_required' }, 400, headers);
-          const sessionToken = sessionTokenFromRequest(request, config);
-          if (!sessionToken) return jsonResponse({ user: null }, 200, headers);
-          let tokenHash: string;
-          try {
-            tokenHash = hashToken(sessionToken);
-          } catch (error) {
-            console.error('Failed to hash dashboard session cookie', error);
-            return jsonResponse({ user: null }, 200, headers);
-          }
-          let session: Awaited<ReturnType<Database['getSession']>>;
-          try {
-            session = await db.getSession(tokenHash);
-          } catch (error) {
-            console.error('Failed to resolve dashboard session', error);
-            return jsonResponse({ user: null }, 200, headers);
-          }
-          if (!session || session.projectId !== projectId) return jsonResponse({ user: null }, 200, headers);
-          try {
-            const user = await db.getUser(session.userId);
-            if (!user) {
-              await db.deleteSession(tokenHash);
-              return jsonResponse({ user: null }, 200, headers);
-            }
-            return jsonResponse({ user }, 200, headers);
-          } catch (error) {
-            console.error('Failed to resolve authenticated user profile', error);
-            try { await db.deleteSession(tokenHash); } catch (cleanupError) { console.error('Failed to clean up invalid dashboard session', cleanupError); }
-            return jsonResponse({ user: null }, 200, headers);
-          }
+          const identity = await userIdentity(request, config, db);
+          if (!identity) return jsonResponse({ user: null }, 200, headers);
+          const user = await db.getUser(identity.userId);
+          return jsonResponse({ user }, 200, headers);
+        }
+
+        if (url.pathname === '/v1/tokens' && request.method === 'GET') {
+          const identity = await userIdentity(request, config, db);
+          if (!identity || identity.kind !== 'user') return jsonResponse({ error: 'session_required' }, 401, headers);
+          const tokens = await db.listApiTokens(identity.userId);
+          return jsonResponse({ tokens: tokens.map((token) => ({ tokenId: token.tokenId, tokenPrefix: token.tokenPrefix, label: token.label, createdAt: token.createdAt.toISOString(), lastUsedAt: token.lastUsedAt?.toISOString() ?? null, revokedAt: token.revokedAt?.toISOString() ?? null })) }, 200, headers);
+        }
+
+        if (url.pathname === '/v1/tokens' && request.method === 'POST') {
+          const identity = await userIdentity(request, config, db);
+          if (!identity || identity.kind !== 'user') return jsonResponse({ error: 'session_required' }, 401, headers);
+          const body = await jsonBody(request);
+          const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim().slice(0, 80) : 'CLI token';
+          const rawToken = `nxa_${randomToken(32)}`;
+          const record = { tokenId: randomUUID(), userId: identity.userId, tokenHash: hashToken(rawToken), tokenPrefix: rawToken.slice(0, 12), label, createdAt: new Date(), lastUsedAt: null, revokedAt: null };
+          await db.createApiToken(record);
+          return jsonResponse({ token: rawToken, tokenId: record.tokenId, tokenPrefix: record.tokenPrefix, label: record.label, createdAt: record.createdAt.toISOString(), warning: 'Copy this token now. It will not be shown again.' }, 201, headers);
+        }
+
+        const tokenRoute = url.pathname.match(/^\/v1\/tokens\/([a-f0-9-]{16,64})$/);
+        if (tokenRoute && request.method === 'DELETE') {
+          const identity = await userIdentity(request, config, db);
+          if (!identity || identity.kind !== 'user') return jsonResponse({ error: 'session_required' }, 401, headers);
+          const tokenId = tokenRoute[1];
+          if (!tokenId) return jsonResponse({ error: 'token_not_found' }, 404, headers);
+          const revoked = await db.revokeApiToken(identity.userId, tokenId);
+          return revoked ? new Response(null, { status: 204, headers }) : jsonResponse({ error: 'token_not_found' }, 404, headers);
         }
 
         if (url.pathname === '/v1/logout' && request.method === 'POST') {

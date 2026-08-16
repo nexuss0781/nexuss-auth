@@ -53,3 +53,23 @@ nexuss --json project show --id morrow-field
 ```
 
 The service enforces ownership for every user-session request. A user cannot list, inspect, update, or delete another account’s project.
+
+
+## API tokens
+
+After browser sign-in, generate a user-scoped token for terminal access:
+
+```bash
+nexuss token create --label "Portfolio CLI"
+nexuss token use --value nxa_<copied-secret>
+nexuss project list
+```
+
+The full secret appears only once. The CLI stores the activated token in its protected local session file and sends it only over HTTPS to Nexuss-auth. Token administration remains tied to browser sign-in:
+
+```bash
+nexuss token list
+nexuss token revoke --id <token-id>
+```
+
+A token can manage only projects owned by its user. It cannot generate or revoke other tokens and it is never equivalent to the server-only admin token.
