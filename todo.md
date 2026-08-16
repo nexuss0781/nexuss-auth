@@ -125,6 +125,14 @@
 
 ## Project avatar upload
 
-- [ ] Add a centered branded avatar upload control above the project creation fields.
-- [ ] Preview the selected image and include it in the project creation payload.
-- [ ] Verify the form and deploy the avatar upload update.
+- [x] Add a centered branded avatar upload control above the project creation fields.
+- [x] Preview the selected image and include it in the project creation payload.
+- [x] Verify the form and deploy the avatar upload update.
+
+## AI agent SKILL package
+
+- [x] Audit current Nexuss-auth API, SDK, CLI, OAuth, persistence, and security contracts.
+- [x] Create a structured `SKILL/` directory with a main directive and focused reference files.
+- [x] Document quick starts, complete API coverage, project lifecycle, session use, and automation boundaries.
+- [x] Add AI-agent operating rules, failure handling, validation steps, and production security directives.
+- [ ] Validate examples and commit the complete SKILL package.
