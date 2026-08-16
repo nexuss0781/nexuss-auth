@@ -136,3 +136,18 @@
 - [x] Document quick starts, complete API coverage, project lifecycle, session use, and automation boundaries.
 - [x] Add AI-agent operating rules, failure handling, validation steps, and production security directives.
 - [ ] Validate examples and commit the complete SKILL package.
+
+## SKILL distribution and release readiness
+
+- [ ] Include `SKILL/` in the published package contents without changing runtime behavior.
+- [ ] Add automated Markdown link, route-coverage, and code-example validation.
+- [ ] Add a documented SKILL version and changelog entry.
+- [ ] Run full repository tests, package inspection, and SKILL validation.
+- [ ] Commit the safe packaging update and prepare the end-to-end test procedure.
+
+
+## Release publication
+
+- [ ] Commit release-readiness changes.
+- [ ] Push the commit to the Nexuss-auth repository.
+- [ ] Publish nexuss-auth 0.2.0 to npm.
