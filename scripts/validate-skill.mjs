@@ -3,7 +3,7 @@ import { join, relative } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
 const skillDir = join(root, 'SKILL');
-const requiredFiles = ['SKILL.md', 'API.md', 'INTEGRATION.md', 'AUTOMATION.md', 'OPERATIONS.md', 'VERSION.md'];
+const requiredFiles = ['SKILL.md', 'CLI.md', 'API.md', 'INTEGRATION.md', 'AUTOMATION.md', 'OPERATIONS.md', 'VERSION.md'];
 const requiredRoutes = ['/health', '/oauth/start/google', '/oauth/start/github', '/oauth/callback', '/v1/me', '/v1/logout', '/v1/projects', '/v1/projects/:projectId'];
 const forbiddenPatterns = [/\bephemeral\b/i, /\brenderSigned/i, /\brenderSignIn/i, /server-rendered/i, /limited words/i];
 
