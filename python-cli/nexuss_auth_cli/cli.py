@@ -179,6 +179,13 @@ def read_config(path: Path = LOCAL_CONFIG) -> dict[str, Any]:
 
 
 def token_command(args: argparse.Namespace) -> None:
+    if args.token_action == "use":
+        if not args.value.startswith("nxa_"):
+            raise CliError("API tokens must start with nxa_.")
+        auth_url = (args.auth_url or os.environ.get("NEXUSS_AUTH_URL") or DEFAULT_AUTH_URL).rstrip("/")
+        save_api_token(args.value, auth_url)
+        print("API token activated for this CLI. Run `nexuss project list` to verify it.")
+        return
     session = require_browser_session()
     api = Api(session)
     if args.token_action == "create":
@@ -193,12 +200,6 @@ def token_command(args: argparse.Namespace) -> None:
     if args.token_action == "revoke":
         api.request("DELETE", f"/v1/tokens/{urllib.parse.quote(args.id)}")
         print(f"Revoked token {args.id}.")
-        return
-    if args.token_action == "use":
-        if not args.value.startswith("nxa_"):
-            raise CliError("API tokens must start with nxa_.")
-        save_api_token(args.value, session["authUrl"])
-        print("API token activated for this CLI. Run `nexuss project list` to verify it.")
         return
     raise CliError("Unknown token command.")
 
@@ -276,7 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
     create_token = token_sub.add_parser("create", help="Generate a token; the secret is shown once."); create_token.add_argument("--label", default="CLI token")
     token_sub.add_parser("list", help="List token metadata without secrets.")
     revoke_token = token_sub.add_parser("revoke", help="Revoke one token."); revoke_token.add_argument("--id", required=True)
-    use_token = token_sub.add_parser("use", help="Activate a token in this CLI profile."); use_token.add_argument("--value", required=True)
+    use_token = token_sub.add_parser("use", help="Activate a token in this CLI profile."); use_token.add_argument("--value", required=True); use_token.add_argument("--auth-url", default=None)
     project = sub.add_parser("project", help="Manage account-owned projects.")
     project_sub = project.add_subparsers(dest="project_action", required=True)
     project_sub.add_parser("list", help="List your projects.")
