@@ -1,9 +1,9 @@
-# SKILL package version
+# Skill contract version
 
-Current version: **1.0.0**
+Current version: **1.1.0**
 
-This version identifies the AI-agent operating contract in `SKILL/`. It is independent from the runtime API version and changes whenever the directives, endpoint references, security rules, or supported operating procedures change.
+This is the AI-agent execution contract for `SKILL/`. It is independent from runtime package versions.
 
-Agents should read `SKILL.md` first and then use the reference files required by the task. A major version change means the operating contract may require new agent behavior. A minor version change adds supported guidance without removing the existing contract. A patch version corrects wording, examples, or links without changing the required behavior.
+Version `1.1.0` rewrites the skill as a task-first operating contract: agents use Nexuss-auth only as required implementation infrastructure, select the smallest relevant reference, and act through explicit authority boundaries.
 
 Last updated: 2026-08-16
