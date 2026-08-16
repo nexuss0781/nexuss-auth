@@ -55,50 +55,67 @@ const updated = await management.updateProject('my-dashboard', {
 });
 ```
 
-## CLI quick start
+## User CLI quick start
 
-Install or build the package that contains the CLI, then set protected environment values:
+Install the user-facing Python CLI and sign in through the browser:
 
 ```bash
-export NEXUSS_AUTH_URL=https://nexuss-auth.vercel.app
-export NEXUSS_AUTH_ADMIN_TOKEN=your-server-only-token
+pip install nexuss-auth
+nexuss login
+nexuss whoami
 ```
 
-List projects:
+The CLI stores a protected local session credential. It does not require a user API key and does not accept the admin token for ordinary project management.
+
+List, create, inspect, rename, configure, and delete account-owned projects:
 
 ```bash
-nexuss-auth project list
-```
-
-Inspect one project:
-
-```bash
-nexuss-auth project inspect --id my-dashboard
-```
-
-Create a project:
-
-```bash
-nexuss-auth project create \
+nexuss project list
+nexuss project create \
   --id my-dashboard \
   --name "My Dashboard" \
   --home https://dashboard.example.com \
   --redirect https://dashboard.example.com/auth/callback \
   --provider google \
   --provider github
+nexuss project show --id my-dashboard
+nexuss project rename --id my-dashboard --name "Customer Dashboard"
+nexuss project providers --id my-dashboard --provider google
+nexuss project icon --id my-dashboard --icon https://cdn.example/icon.png
+nexuss project delete --id my-dashboard
 ```
 
-Update a project:
+Project creation returns the project ID and full public configuration. Use `--json` for AI agents and scripts. To create a local file from an existing cloud project, run `nexuss project pull --id <project-id> --file nexuss.yaml.json`. Then use `nexuss project diff --file nexuss.yaml.json` and `nexuss project push --file nexuss.yaml.json` to synchronize changes. API tokens are owner-scoped and can manage only projects owned by the token’s user.
+
+Generate a user token from a browser-authenticated CLI session, then activate it for subsequent project commands:
 
 ```bash
-nexuss-auth project update \
-  --id my-dashboard \
-  --name "Customer Dashboard" \
-  --status active \
-  --provider google
+nexuss token create --label "Portfolio CLI"
+nexuss token use --value nxa_<copied-secret>
+nexuss project list
 ```
 
-Run `nexuss-auth --help` or `nexuss-auth project --help` when exact local command options are uncertain. Do not guess option names.
+Use token metadata and revocation only from the browser-authenticated session:
+
+```bash
+nexuss token list
+nexuss token revoke --id <token-id>
+```
+
+The full token is shown only once. Store it in the operating system credential store or a protected CI secret. Never commit it, print it in debug logs, or place it in browser code. A user token is limited to that user’s projects, including list, inspect, create, update, and delete operations; it is not an admin token. If it is revoked, activate a replacement token.
+
+## Private automation CLI
+
+A protected server or CI process may use the separate TypeScript management CLI with:
+
+```bash
+export NEXUSS_AUTH_URL=https://nexuss-auth.vercel.app
+export NEXUSS_AUTH_ADMIN_TOKEN=your-server-only-token
+```
+
+Never put this admin token in browser code or ask ordinary users to paste it into the user CLI.
+
+Run `nexuss --help` or `nexuss project --help` when exact local command options are uncertain. Do not guess option names.
 
 ## Agent project lifecycle
 

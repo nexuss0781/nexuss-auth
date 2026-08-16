@@ -81,6 +81,7 @@ class Api:
     def __init__(self, session: dict[str, str]):
         self.auth_url = session["authUrl"]
         self.token = session["token"]
+        self.mode = session.get("mode", "session")
 
     def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         url = f"{self.auth_url}{path}"
@@ -102,7 +103,11 @@ class Api:
                 detail = {"error": exc.reason}
             message = detail.get("error", f"HTTP {exc.code}") if isinstance(detail, dict) else f"HTTP {exc.code}"
             if exc.code == 401:
-                message = "Your Nexuss-auth session expired. Run `nexuss login` again."
+                message = (
+                    "The API token is invalid or revoked. Run `nexuss token use --value <new-token>."
+                    if self.mode == "api"
+                    else "Your Nexuss-auth session expired. Run `nexuss login` again."
+                )
             raise CliError(message) from exc
         except urllib.error.URLError as exc:
             raise CliError(f"Nexuss-auth is unreachable: {exc.reason}") from exc
@@ -168,7 +173,7 @@ def write_config(project: dict[str, Any], path: Path = LOCAL_CONFIG) -> None:
 
 def read_config(path: Path = LOCAL_CONFIG) -> dict[str, Any]:
     if not path.exists():
-        raise CliError(f"No local project file at {path}. Run `nexuss project pull --id <project-id>` first.")
+        raise CliError(f"No local project file at {path}. Run `nexuss project pull --id <project-id>` first, or create a file containing projectId.")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -248,17 +253,26 @@ def project_command(args: argparse.Namespace) -> None:
         output(api.request("PATCH", f"/v1/projects/{urllib.parse.quote(args.id)}", body), args.json)
         return
     if args.project_action in {"pull", "push", "diff"}:
-        local = read_config(Path(args.file))
-        remote = api.project(local["projectId"])
+        path = Path(args.file)
         if args.project_action == "pull":
-            write_config(remote, Path(args.file))
-            print(f"Pulled {local['projectId']} into {args.file}.")
-        elif args.project_action == "diff":
-            changes = {key: {"local": local.get(key), "cloud": remote.get(key)} for key in sorted(set(local) | set(remote)) if local.get(key) != remote.get(key)}
-            output(changes, True)
+            local = read_config(path) if path.exists() else {}
+            project_id = args.id or local.get("projectId")
+            if not project_id:
+                raise CliError("Project pull requires --id <project-id> when the local file does not exist.")
+            if local.get("projectId") and local["projectId"] != project_id:
+                raise CliError("The local projectId does not match --id.")
+            remote = api.project(project_id)
+            write_config(remote, path)
+            print(f"Pulled {project_id} into {args.file}.")
         else:
-            changes = {key: value for key, value in local.items() if key != "projectId"}
-            output(api.request("PATCH", f"/v1/projects/{urllib.parse.quote(local['projectId'])}", changes), args.json)
+            local = read_config(path)
+            remote = api.project(local["projectId"])
+            if args.project_action == "diff":
+                changes = {key: {"local": local.get(key), "cloud": remote.get(key)} for key in sorted(set(local) | set(remote)) if local.get(key) != remote.get(key)}
+                output(changes, True)
+            else:
+                changes = {key: value for key, value in local.items() if key != "projectId"}
+                output(api.request("PATCH", f"/v1/projects/{urllib.parse.quote(local['projectId'])}", changes), args.json)
         return
     raise CliError("Unknown project command.")
 
@@ -288,7 +302,10 @@ def build_parser() -> argparse.ArgumentParser:
     providers = project_sub.add_parser("providers"); providers.add_argument("--id", required=True); providers.add_argument("--provider", action="append", choices=["google", "github"], required=True)
     icon = project_sub.add_parser("icon"); icon.add_argument("--id", required=True); icon.add_argument("--icon", required=True)
     for action in ["pull", "push", "diff"]:
-        sync = project_sub.add_parser(action); sync.add_argument("--file", default=str(LOCAL_CONFIG))
+        sync = project_sub.add_parser(action)
+        sync.add_argument("--file", default=str(LOCAL_CONFIG))
+        if action == "pull":
+            sync.add_argument("--id", default=None, help="Project ID to download when the local file does not exist.")
     login_parser.set_defaults(handler=login)
     token.set_defaults(handler=token_command)
     project.set_defaults(handler=project_command)
