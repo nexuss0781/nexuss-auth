@@ -53,3 +53,9 @@
 - [x] Project settings persist across sessions.
 - [x] A fresh user can sign in, create a project, and use the SDK/CLI integration guidance.
 - [x] No frontend bundle contains the admin token or provider secret.
+
+## Google OAuth invalid-client follow-up
+
+- [x] Inspect the production Google client configuration and callback alignment without exposing credentials.
+- [x] Correct the deployment or Google OAuth configuration if a mismatch is found.
+- [x] Redeploy and verify the Google OAuth authorization flow.
