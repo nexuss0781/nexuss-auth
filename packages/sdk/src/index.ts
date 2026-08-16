@@ -21,6 +21,29 @@ export interface UserResponse {
   user: NexAuthUser | null;
 }
 
+export type ProjectStatus = 'active' | 'disabled';
+
+export interface NexAuthProject {
+  projectId: string;
+  name: string;
+  homepageUrl: string;
+  description: string;
+  avatarUrl: string | null;
+  allowedRedirectUris: string[];
+  allowedOrigins: string[];
+  enabledProviders: Provider[];
+  status: ProjectStatus;
+}
+
+export type CreateProjectInput = NexAuthProject;
+export type UpdateProjectInput = Partial<Omit<NexAuthProject, 'projectId'>>;
+
+export interface NexAuthManagementConfig {
+  authUrl: string;
+  adminToken: string;
+  fetch?: typeof fetch;
+}
+
 export function buildLoginUrl(config: Pick<NexAuthConfig, 'projectId' | 'authUrl'>, provider: Provider, redirectUri: string): string {
   if (!config.projectId.trim()) throw new Error('Nex-auth projectId is required');
   if (!['google', 'github'].includes(provider)) throw new Error(`Unsupported provider: ${provider}`);
@@ -92,4 +115,49 @@ export class NexAuthClient {
 
 export function createAuth(config: NexAuthConfig): NexAuthClient {
   return new NexAuthClient(config);
+}
+
+export class NexAuthManagementClient {
+  private readonly authUrl: string;
+  private readonly adminToken: string;
+  private readonly fetcher: typeof fetch;
+
+  constructor(config: NexAuthManagementConfig) {
+    const authUrl = new URL(config.authUrl);
+    if (!['http:', 'https:'].includes(authUrl.protocol)) throw new Error('Nex-auth authUrl must use HTTP or HTTPS');
+    if (!config.adminToken.trim()) throw new Error('Nex-auth adminToken is required');
+    this.authUrl = authUrl.toString().replace(/\/$/, '');
+    this.adminToken = config.adminToken;
+    this.fetcher = config.fetch ?? fetch;
+  }
+
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await this.fetcher(new URL(path, this.authUrl), {
+      ...init,
+      headers: { authorization: `Bearer ${this.adminToken}`, 'content-type': 'application/json', ...(init.headers ?? {}) },
+    });
+    if (!response.ok) throw new Error(`Nex-auth management request failed with status ${response.status}`);
+    return await response.json() as T;
+  }
+
+  async listProjects(): Promise<NexAuthProject[]> {
+    const payload = await this.request<{ projects: NexAuthProject[] }>('/v1/projects');
+    return payload.projects;
+  }
+
+  async getProject(projectId: string): Promise<NexAuthProject> {
+    return this.request<NexAuthProject>(`/v1/projects/${encodeURIComponent(projectId)}`);
+  }
+
+  async createProject(project: CreateProjectInput): Promise<NexAuthProject> {
+    return this.request<NexAuthProject>('/v1/projects', { method: 'POST', body: JSON.stringify(project) });
+  }
+
+  async updateProject(projectId: string, updates: UpdateProjectInput): Promise<NexAuthProject> {
+    return this.request<NexAuthProject>(`/v1/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify(updates) });
+  }
+}
+
+export function createManagementClient(config: NexAuthManagementConfig): NexAuthManagementClient {
+  return new NexAuthManagementClient(config);
 }

@@ -3,10 +3,23 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS projects (
   project_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  homepage_url TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  avatar_url TEXT,
   allowed_redirect_uris TEXT[] NOT NULL,
+  allowed_origins TEXT[] NOT NULL DEFAULT '{}',
+  enabled_providers TEXT[] NOT NULL DEFAULT '{google,github}',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS homepage_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS allowed_origins TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled_providers TEXT[] NOT NULL DEFAULT '{google,github}';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
 
 CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

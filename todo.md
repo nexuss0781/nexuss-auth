@@ -4,4 +4,9 @@
 - [x] Copy the dashboard source, styles, and safe static branding assets into the Nexuss-auth repository.
 - [x] Add dashboard build scripts and verify the unified workspace compiles successfully.
 - [x] Commit and push the dashboard frontend to the `main` branch.
-- [ ] Continue by wiring the dashboard to the Nexuss-auth project-management API.
+- [x] Define the project-management request and response contracts for human and agent consumers.
+- [x] Extend persistence with project home URL, description, branding, provider settings, and status.
+- [x] Implement authenticated project create, list, read, update, and provider-toggle API endpoints.
+- [x] Implement portable CLI commands for project create, inspect, list, and update operations.
+- [x] Connect the dashboard to the real management API without exposing server secrets to the browser.
+- [x] Validate, document, commit, and push the full workflow.

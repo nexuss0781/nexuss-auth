@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { authorizationUrl, exchangeCode } from './providers.js';
 import { hashToken, jsonResponse, parseCookies, randomToken, serializeCookie, safeEqual } from './crypto.js';
-import type { Database, Provider, ProjectRecord, ServerConfig } from './types.js';
+import type { Database, ProjectStatus, Provider, ProjectRecord, ServerConfig } from './types.js';
 
 const providers = new Set<Provider>(['google', 'github']);
 const MAX_BODY_BYTES = 16 * 1024;
@@ -32,6 +32,43 @@ function isAllowedRedirect(project: ProjectRecord, redirectUri: string): boolean
   } catch {
     return false;
   }
+}
+
+function validHttpUrl(value: string): boolean {
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
+function stringList(value: unknown): string[] | null {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return null;
+  return [...new Set(value.map((item) => item.trim()).filter(Boolean))];
+}
+
+function providerList(value: unknown): Provider[] | null {
+  const parsed = stringList(value);
+  if (!parsed || parsed.some((provider) => !providers.has(provider as Provider))) return null;
+  return parsed as Provider[];
+}
+
+function projectFromBody(body: Record<string, unknown>, existing?: ProjectRecord): ProjectRecord | null {
+  const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : existing?.projectId;
+  const name = typeof body.name === 'string' ? body.name.trim() : existing?.name;
+  const homepageUrl = typeof body.homepageUrl === 'string' ? body.homepageUrl.trim() : existing?.homepageUrl;
+  const description = typeof body.description === 'string' ? body.description.trim() : existing?.description ?? '';
+  const avatarUrl = body.avatarUrl === null ? null : typeof body.avatarUrl === 'string' ? body.avatarUrl.trim() || null : existing?.avatarUrl ?? null;
+  const allowedRedirectUris = body.allowedRedirectUris === undefined ? existing?.allowedRedirectUris : stringList(body.allowedRedirectUris);
+  const allowedOrigins = body.allowedOrigins === undefined ? existing?.allowedOrigins : stringList(body.allowedOrigins);
+  const enabledProviders = body.enabledProviders === undefined ? existing?.enabledProviders ?? ['google', 'github'] : providerList(body.enabledProviders);
+  const status = body.status === undefined ? existing?.status ?? 'active' : body.status === 'active' || body.status === 'disabled' ? body.status as ProjectStatus : null;
+  if (!projectId || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(projectId) || !name || !homepageUrl || !validHttpUrl(homepageUrl) || !allowedRedirectUris || allowedRedirectUris.length === 0 || !enabledProviders || !status) return null;
+  if (allowedRedirectUris.some((uri) => !validHttpUrl(uri))) return null;
+  const origins = allowedOrigins && allowedOrigins.length > 0 ? allowedOrigins : [...new Set(allowedRedirectUris.map((uri) => new URL(uri).origin))];
+  if (origins.some((origin) => !validHttpUrl(origin) || new URL(origin).pathname !== '/')) return null;
+  if (avatarUrl && !validHttpUrl(avatarUrl)) return null;
+  return { projectId, name, homepageUrl, description, avatarUrl, allowedRedirectUris, allowedOrigins: origins, enabledProviders, status };
 }
 
 function callbackUri(config: ServerConfig): string {
@@ -76,13 +113,7 @@ function writeNodeResponse(response: ServerResponse, result: Response): void {
 
 function corsHeaders(origin: string | null, project: ProjectRecord | null): Record<string, string> {
   if (!origin || !project) return {};
-  const allowed = project.allowedRedirectUris.some((redirectUri) => {
-    try {
-      return new URL(redirectUri).origin === origin;
-    } catch {
-      return false;
-    }
-  });
+  const allowed = project.allowedOrigins.includes(origin);
   return allowed
     ? { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true', vary: 'Origin' }
     : {};
@@ -101,6 +132,17 @@ function adminAuthorized(request: Request, config: ServerConfig): boolean {
   return Boolean(config.adminToken && token && safeEqual(token, config.adminToken));
 }
 
+async function managementAuthorized(request: Request, config: ServerConfig, db: Database): Promise<boolean> {
+  if (adminAuthorized(request, config)) return true;
+  if (!config.adminEmails || config.adminEmails.length === 0) return false;
+  const sessionToken = parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName];
+  if (!sessionToken) return false;
+  const session = await db.getSession(hashToken(sessionToken));
+  if (!session) return false;
+  const user = await db.getUser(session.userId);
+  return Boolean(user?.email && config.adminEmails.includes(user.email.toLowerCase()));
+}
+
 export function createAuthApp(config: ServerConfig, db: Database): { fetch(request: Request): Promise<Response> } {
   return {
     async fetch(request: Request): Promise<Response> {
@@ -117,7 +159,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
       if (request.method === 'OPTIONS') {
         return new Response(null, {
           status: 204,
-          headers: { ...headers, 'access-control-allow-methods': 'GET,POST,OPTIONS', 'access-control-allow-headers': 'content-type,x-nex-auth-project', 'access-control-max-age': '86400' },
+          headers: { ...headers, 'access-control-allow-methods': 'GET,POST,PATCH,OPTIONS', 'access-control-allow-headers': 'content-type,x-nex-auth-project,authorization', 'access-control-max-age': '86400' },
         });
       }
 
@@ -126,7 +168,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
 
         if (url.pathname.startsWith('/oauth/start/') && request.method === 'GET') {
           const provider = providerFrom(url.pathname.split('/').pop());
-          if (!provider || !projectId || !project) return jsonResponse({ error: 'invalid_project_or_provider' }, 400, headers);
+          if (!provider || !projectId || !project || project.status !== 'active' || !project.enabledProviders.includes(provider)) return jsonResponse({ error: 'invalid_project_or_provider' }, 400, headers);
           const redirectUri = url.searchParams.get('redirect_uri');
           if (!redirectUri || !isAllowedRedirect(project, redirectUri)) return jsonResponse({ error: 'redirect_uri_not_allowed' }, 400, headers);
           const state = randomToken(32);
@@ -189,22 +231,36 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           });
         }
 
+        if (url.pathname === '/v1/projects' && request.method === 'GET') {
+          if (!await managementAuthorized(request, config, db)) return jsonResponse({ error: 'unauthorized' }, 401, headers);
+          return jsonResponse({ projects: await db.listProjects() }, 200, headers);
+        }
+
         if (url.pathname === '/v1/projects' && request.method === 'POST') {
-          if (!adminAuthorized(request, config)) return jsonResponse({ error: 'unauthorized' }, 401, headers);
-          const body = await jsonBody(request);
-          const nextProject: ProjectRecord = {
-            projectId: typeof body.projectId === 'string' ? body.projectId : '',
-            name: typeof body.name === 'string' ? body.name : '',
-            allowedRedirectUris: Array.isArray(body.allowedRedirectUris) ? body.allowedRedirectUris.filter((value): value is string => typeof value === 'string') : [],
-          };
-          if (!nextProject.projectId || !nextProject.name || nextProject.allowedRedirectUris.length === 0) {
-            return jsonResponse({ error: 'project_id_name_and_redirect_uri_required' }, 400, headers);
-          }
-          for (const redirectUri of nextProject.allowedRedirectUris) {
-            const parsed = new URL(redirectUri);
-            if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Redirect URIs must use HTTP or HTTPS');
-          }
+          if (!await managementAuthorized(request, config, db)) return jsonResponse({ error: 'unauthorized' }, 401, headers);
+          const nextProject = projectFromBody(await jsonBody(request));
+          if (!nextProject) return jsonResponse({ error: 'invalid_project_configuration' }, 400, headers);
           return jsonResponse(await db.upsertProject(nextProject), 201, headers);
+        }
+
+        const projectRoute = url.pathname.match(/^\/v1\/projects\/([a-z0-9-]{1,63})$/);
+        if (projectRoute && request.method === 'GET') {
+          if (!await managementAuthorized(request, config, db)) return jsonResponse({ error: 'unauthorized' }, 401, headers);
+          const managedProjectId = projectRoute[1];
+          if (!managedProjectId) return jsonResponse({ error: 'project_not_found' }, 404, headers);
+          const managedProject = await db.getProject(managedProjectId);
+          return managedProject ? jsonResponse(managedProject, 200, headers) : jsonResponse({ error: 'project_not_found' }, 404, headers);
+        }
+
+        if (projectRoute && request.method === 'PATCH') {
+          if (!await managementAuthorized(request, config, db)) return jsonResponse({ error: 'unauthorized' }, 401, headers);
+          const managedProjectId = projectRoute[1];
+          if (!managedProjectId) return jsonResponse({ error: 'project_not_found' }, 404, headers);
+          const existing = await db.getProject(managedProjectId);
+          if (!existing) return jsonResponse({ error: 'project_not_found' }, 404, headers);
+          const nextProject = projectFromBody(await jsonBody(request), existing);
+          if (!nextProject || nextProject.projectId !== existing.projectId) return jsonResponse({ error: 'invalid_project_configuration' }, 400, headers);
+          return jsonResponse(await db.upsertProject(nextProject), 200, headers);
         }
 
         return jsonResponse({ error: 'not_found' }, 404, headers);

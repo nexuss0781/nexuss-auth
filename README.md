@@ -10,6 +10,7 @@ Nex-auth is a centralized authentication service and TypeScript SDK for adding *
 |---|---|
 | `packages/server` | Central OAuth callback service, PostgreSQL persistence, project allowlists, and secure session cookies. |
 | `packages/sdk` | Framework-agnostic browser SDK published as `nexuss-auth`. |
+| `apps/dashboard` | Static Nexuss-auth Control Plane dashboard for owner-managed projects. |
 | `packages/server/sql/schema.sql` | PostgreSQL schema for projects, users, identities, OAuth state, and sessions. |
 
 ## Local setup
@@ -60,11 +61,38 @@ curl -X POST https://auth.example.com/v1/projects \
   -d '{
     "projectId": "my-dashboard",
     "name": "My Dashboard",
-    "allowedRedirectUris": ["https://dashboard.example.com/login"]
+    "homepageUrl": "https://dashboard.example.com",
+    "description": "Customer account access.",
+    "avatarUrl": null,
+    "allowedRedirectUris": ["https://dashboard.example.com/login"],
+    "allowedOrigins": ["https://dashboard.example.com"],
+    "enabledProviders": ["google", "github"],
+    "status": "active"
   }'
 ```
 
 Redirect URIs are exact-match allowlisted. Do not use a wildcard in production.
+
+## Project management API and CLI
+
+The management API supports `GET /v1/projects`, `POST /v1/projects`, `GET /v1/projects/:projectId`, and `PATCH /v1/projects/:projectId`. CLI and server-to-server callers use `NEX_AUTH_ADMIN_TOKEN` as a bearer token. The browser dashboard never receives this token: set `NEX_AUTH_ADMIN_EMAILS` to one or more verified user emails, separated by commas, and those signed-in owners can manage projects through their HTTP-only Nexuss-auth session.
+
+The source package exposes portable project commands after it is built or published:
+
+```bash
+export NEXUSS_AUTH_URL=https://auth.example.com
+export NEXUSS_AUTH_ADMIN_TOKEN=your-server-only-admin-token
+
+nexuss-auth project list
+nexuss-auth project inspect --id my-dashboard
+nexuss-auth project create \
+  --id my-dashboard \
+  --name "My Dashboard" \
+  --home https://dashboard.example.com \
+  --redirect https://dashboard.example.com/login
+```
+
+Treat `NEXUSS_AUTH_ADMIN_TOKEN` as an automation and server secret. Do not put it in a browser, frontend build environment, or client-side agent prompt.
 
 ## Use the SDK
 
@@ -118,6 +146,7 @@ Set the following Vercel environment variables before deploying:
 ```text
 NEX_AUTH_PUBLIC_URL
 NEX_AUTH_ADMIN_TOKEN
+NEX_AUTH_ADMIN_EMAILS
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 GITHUB_CLIENT_ID

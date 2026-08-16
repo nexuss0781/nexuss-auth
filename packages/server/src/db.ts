@@ -13,6 +13,32 @@ const { Pool } = pg;
 
 type Queryable = { query: pg.Pool['query'] };
 
+type ProjectRow = {
+  project_id: string;
+  name: string;
+  homepage_url: string;
+  description: string;
+  avatar_url: string | null;
+  allowed_redirect_uris: string[];
+  allowed_origins: string[];
+  enabled_providers: ('google' | 'github')[];
+  status: 'active' | 'disabled';
+};
+
+function projectFromRow(row: ProjectRow): ProjectRecord {
+  return {
+    projectId: row.project_id,
+    name: row.name,
+    homepageUrl: row.homepage_url,
+    description: row.description,
+    avatarUrl: row.avatar_url,
+    allowedRedirectUris: row.allowed_redirect_uris,
+    allowedOrigins: row.allowed_origins,
+    enabledProviders: row.enabled_providers,
+    status: row.status,
+  };
+}
+
 export class PostgresDatabase implements Database {
   private readonly pool: pg.Pool;
 
@@ -24,21 +50,37 @@ export class PostgresDatabase implements Database {
     await this.pool.end();
   }
 
+  async listProjects(): Promise<ProjectRecord[]> {
+    const result = await this.pool.query<ProjectRow>(
+      'SELECT project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects ORDER BY created_at DESC, project_id ASC',
+    );
+    return result.rows.map(projectFromRow);
+  }
+
   async getProject(projectId: string): Promise<ProjectRecord | null> {
-    const result = await this.pool.query<{ project_id: string; name: string; allowed_redirect_uris: string[] }>(
-      'SELECT project_id, name, allowed_redirect_uris FROM projects WHERE project_id = $1',
+    const result = await this.pool.query<ProjectRow>(
+      'SELECT project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE project_id = $1',
       [projectId],
     );
     const row = result.rows[0];
-    return row ? { projectId: row.project_id, name: row.name, allowedRedirectUris: row.allowed_redirect_uris } : null;
+    return row ? projectFromRow(row) : null;
   }
 
   async upsertProject(project: ProjectRecord): Promise<ProjectRecord> {
     await this.pool.query(
-      `INSERT INTO projects (project_id, name, allowed_redirect_uris)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (project_id) DO UPDATE SET name = EXCLUDED.name, allowed_redirect_uris = EXCLUDED.allowed_redirect_uris`,
-      [project.projectId, project.name, project.allowedRedirectUris],
+      `INSERT INTO projects (project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (project_id) DO UPDATE SET
+         name = EXCLUDED.name,
+         homepage_url = EXCLUDED.homepage_url,
+         description = EXCLUDED.description,
+         avatar_url = EXCLUDED.avatar_url,
+         allowed_redirect_uris = EXCLUDED.allowed_redirect_uris,
+         allowed_origins = EXCLUDED.allowed_origins,
+         enabled_providers = EXCLUDED.enabled_providers,
+         status = EXCLUDED.status,
+         updated_at = now()`,
+      [project.projectId, project.name, project.homepageUrl, project.description, project.avatarUrl, project.allowedRedirectUris, project.allowedOrigins, project.enabledProviders, project.status],
     );
     return project;
   }

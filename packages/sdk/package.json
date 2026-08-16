@@ -17,6 +17,9 @@
       "import": "./dist/index.js"
     }
   },
+  "bin": {
+    "nexuss-auth": "dist/cli.js"
+  },
   "files": [
     "dist",
     "README.md"
