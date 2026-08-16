@@ -14,7 +14,13 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS projects (
     project_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    homepage_url TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    avatar_url TEXT,
     allowed_redirect_uris TEXT NOT NULL,
+    allowed_origins TEXT NOT NULL DEFAULT '[]',
+    enabled_providers TEXT NOT NULL DEFAULT '["google","github"]',
+    status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
@@ -56,6 +62,15 @@ const schemaStatements = [
   'CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at)',
 ];
 
+const projectMigrationStatements = [
+  "ALTER TABLE projects ADD COLUMN homepage_url TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+  'ALTER TABLE projects ADD COLUMN avatar_url TEXT',
+  "ALTER TABLE projects ADD COLUMN allowed_origins TEXT NOT NULL DEFAULT '[]'",
+  "ALTER TABLE projects ADD COLUMN enabled_providers TEXT NOT NULL DEFAULT '[\"google\",\"github\"]'",
+  "ALTER TABLE projects ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+];
+
 type ParadConfig = {
   gatewayUrl: string;
   apiKey: string;
@@ -79,6 +94,36 @@ function jsonUris(value: string): string[] {
   } catch {
     return [];
   }
+}
+
+function jsonProviders(value: string): ('google' | 'github')[] {
+  return jsonUris(value).filter((provider): provider is 'google' | 'github' => provider === 'google' || provider === 'github');
+}
+
+type ProjectRow = {
+  project_id: string;
+  name: string;
+  homepage_url: string;
+  description: string;
+  avatar_url: string | null;
+  allowed_redirect_uris: string;
+  allowed_origins: string;
+  enabled_providers: string;
+  status: 'active' | 'disabled';
+};
+
+function projectFromRow(row: ProjectRow): ProjectRecord {
+  return {
+    projectId: row.project_id,
+    name: row.name,
+    homepageUrl: row.homepage_url,
+    description: row.description,
+    avatarUrl: row.avatar_url,
+    allowedRedirectUris: jsonUris(row.allowed_redirect_uris),
+    allowedOrigins: jsonUris(row.allowed_origins),
+    enabledProviders: jsonProviders(row.enabled_providers),
+    status: row.status === 'disabled' ? 'disabled' : 'active',
+  };
 }
 
 function rows<T extends Record<string, unknown>>(db: ParadConnection, sql: string, params: unknown[] = []): T[] {
@@ -120,6 +165,9 @@ export class ParadoxDatabase implements Database {
     });
     try {
       for (const statement of schemaStatements) db.execute(statement);
+      for (const statement of projectMigrationStatements) {
+        try { db.execute(statement); } catch { /* Existing databases already have this column. */ }
+      }
       return await work(db);
     } finally {
       try {
@@ -131,19 +179,24 @@ export class ParadoxDatabase implements Database {
     }
   }
 
+  async listProjects(): Promise<ProjectRecord[]> {
+    return this.run((db) => rows<ProjectRow>(db, 'SELECT project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects ORDER BY created_at DESC, project_id ASC').map(projectFromRow));
+  }
+
   async getProject(projectId: string): Promise<ProjectRecord | null> {
     return this.run((db) => {
-      const row = one<{ project_id: string; name: string; allowed_redirect_uris: string }>(db, 'SELECT project_id, name, allowed_redirect_uris FROM projects WHERE project_id = ?', [projectId]);
-      return row ? { projectId: row.project_id, name: row.name, allowedRedirectUris: jsonUris(row.allowed_redirect_uris) } : null;
+      const row = one<ProjectRow>(db, 'SELECT project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE project_id = ?', [projectId]);
+      return row ? projectFromRow(row) : null;
     });
   }
 
   async upsertProject(project: ProjectRecord): Promise<ProjectRecord> {
     return this.run((db) => {
       db.execute(
-        `INSERT INTO projects (project_id, name, allowed_redirect_uris) VALUES (?, ?, ?)
-         ON CONFLICT(project_id) DO UPDATE SET name = excluded.name, allowed_redirect_uris = excluded.allowed_redirect_uris, updated_at = CURRENT_TIMESTAMP`,
-        [project.projectId, project.name, JSON.stringify(project.allowedRedirectUris)],
+        `INSERT INTO projects (project_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id) DO UPDATE SET name = excluded.name, homepage_url = excluded.homepage_url, description = excluded.description, avatar_url = excluded.avatar_url, allowed_redirect_uris = excluded.allowed_redirect_uris, allowed_origins = excluded.allowed_origins, enabled_providers = excluded.enabled_providers, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
+        [project.projectId, project.name, project.homepageUrl, project.description, project.avatarUrl, JSON.stringify(project.allowedRedirectUris), JSON.stringify(project.allowedOrigins), JSON.stringify(project.enabledProviders), project.status],
       );
       return project;
     });

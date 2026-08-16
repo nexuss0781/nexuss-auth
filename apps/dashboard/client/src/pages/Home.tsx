@@ -2,6 +2,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ManagementError, beginDashboardSignIn, createManagedProject, listManagedProjects, updateManagedProject, type ManagedProject, type Provider } from "@/lib/management";
 import {
   ArrowUpRight,
   Bot,
@@ -29,7 +30,7 @@ import {
   UsersRound,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 const logoUrl = "/brand/nexuss-auth-orbit-logo.png";
@@ -44,7 +45,24 @@ type Project = {
   redirect: string;
   description: string;
   initials: string;
+  avatarUrl: string | null;
+  enabledProviders: Provider[];
+  status: "active" | "disabled";
 };
+
+function projectFromManaged(project: ManagedProject): Project {
+  return {
+    id: project.projectId,
+    name: project.name,
+    homepage: project.homepageUrl,
+    redirect: project.allowedRedirectUris[0] ?? project.homepageUrl,
+    description: project.description,
+    initials: project.name.split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase(),
+    avatarUrl: project.avatarUrl,
+    enabledProviders: project.enabledProviders,
+    status: project.status,
+  };
+}
 
 const initialProjects: Project[] = [
   {
@@ -54,6 +72,9 @@ const initialProjects: Project[] = [
     redirect: "https://nexuss-auth.vercel.app/oauth/callback",
     description: "The central identity system for portable, agent-native authentication.",
     initials: "NA",
+    avatarUrl: null,
+    enabledProviders: ["google", "github"],
+    status: "active",
   },
   {
     id: "customer-dashboard",
@@ -62,6 +83,9 @@ const initialProjects: Project[] = [
     redirect: "https://dashboard.example.com/auth/callback",
     description: "Customer-facing access for a product dashboard.",
     initials: "CD",
+    avatarUrl: null,
+    enabledProviders: ["google", "github"],
+    status: "active",
   },
 ];
 
@@ -106,14 +130,34 @@ function ProviderToggle({
 export default function Home() {
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [selectedId, setSelectedId] = useState(initialProjects[0].id);
-  const [googleEnabled, setGoogleEnabled] = useState(true);
-  const [githubEnabled, setGithubEnabled] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [integrationMode, setIntegrationMode] = useState<"SDK" | "CLI" | "API">("SDK");
   const [draft, setDraft] = useState({ name: "", homepage: "", redirect: "" });
+  const [apiState, setApiState] = useState<"loading" | "connected" | "unauthorized" | "offline">("loading");
+  const [saving, setSaving] = useState(false);
 
   const selected = useMemo(() => projects.find((project) => project.id === selectedId) ?? projects[0], [projects, selectedId]);
+  const [details, setDetails] = useState({ name: selected.name, homepage: selected.homepage, redirect: selected.redirect, description: selected.description });
+  const googleEnabled = selected.enabledProviders.includes("google");
+  const githubEnabled = selected.enabledProviders.includes("github");
+
+  useEffect(() => {
+    void listManagedProjects()
+      .then((records) => {
+        if (records.length > 0) {
+          const nextProjects = records.map(projectFromManaged);
+          setProjects(nextProjects);
+          setSelectedId(nextProjects[0]?.id ?? selectedId);
+        }
+        setApiState("connected");
+      })
+      .catch((error: unknown) => setApiState(error instanceof ManagementError && error.status === 401 ? "unauthorized" : "offline"));
+  }, []);
+
+  useEffect(() => {
+    setDetails({ name: selected.name, homepage: selected.homepage, redirect: selected.redirect, description: selected.description });
+  }, [selected.id]);
 
   const codeByMode = {
     SDK: `import { createAuth } from "nexuss-auth";\n\nconst auth = createAuth({\n  authUrl: "https://nexuss-auth.vercel.app",\n  projectId: "${selected.id}",\n});\n\nawait auth.signInWithGoogle();`,
@@ -122,25 +166,60 @@ export default function Home() {
   };
   const activeCode = integrationMode === "CLI" ? codeByMode.CLI.replace(/\n\+/g, "\n") : codeByMode[integrationMode];
 
-  const createProject = () => {
+  const saveProject = async () => {
+    setSaving(true);
+    try {
+      const updated = await updateManagedProject(selected.id, {
+        name: details.name.trim(),
+        homepageUrl: details.homepage.trim(),
+        allowedRedirectUris: [details.redirect.trim()],
+        description: details.description.trim(),
+      });
+      const next = projectFromManaged(updated);
+      setProjects((current) => current.map((project) => project.id === next.id ? next : project));
+      toast.success("Project configuration saved.");
+    } catch (error) {
+      toast.error(error instanceof ManagementError && error.status === 401 ? "Sign in as an owner before saving projects." : "Unable to save the project configuration.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleProvider = async (provider: Provider) => {
+    const enabledProviders = selected.enabledProviders.includes(provider) ? selected.enabledProviders.filter((item) => item !== provider) : [...selected.enabledProviders, provider];
+    setSaving(true);
+    try {
+      const updated = await updateManagedProject(selected.id, { enabledProviders });
+      const next = projectFromManaged(updated);
+      setProjects((current) => current.map((project) => project.id === next.id ? next : project));
+      toast.success(`${provider === "google" ? "Google" : "GitHub"} provider ${enabledProviders.includes(provider) ? "enabled" : "disabled"}.`);
+    } catch (error) {
+      toast.error(error instanceof ManagementError && error.status === 401 ? "Sign in as an owner before changing providers." : "Unable to update provider settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const createProject = async () => {
     if (!draft.name.trim() || !draft.homepage.trim() || !draft.redirect.trim()) {
       toast.error("Add a project name, home URL, and redirect URL.");
       return;
     }
     const id = draft.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-    const project: Project = {
-      id,
-      name: draft.name.trim(),
-      homepage: draft.homepage.trim(),
-      redirect: draft.redirect.trim(),
-      description: "New project configuration. Add a description in Branding.",
-      initials: draft.name.trim().split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase(),
-    };
-    setProjects((current) => [...current, project]);
-    setSelectedId(project.id);
-    setDraft({ name: "", homepage: "", redirect: "" });
-    setNewProjectOpen(false);
-    toast.success("Project draft created in this workspace.");
+    setSaving(true);
+    try {
+      const created = await createManagedProject({ projectId: id, name: draft.name.trim(), homepageUrl: draft.homepage.trim(), description: "", avatarUrl: null, allowedRedirectUris: [draft.redirect.trim()], allowedOrigins: [new URL(draft.redirect.trim()).origin], enabledProviders: ["google", "github"], status: "active" });
+      const project = projectFromManaged(created);
+      setProjects((current) => [...current, project]);
+      setSelectedId(project.id);
+      setDraft({ name: "", homepage: "", redirect: "" });
+      setNewProjectOpen(false);
+      toast.success("Project created and ready for SDK or CLI integration.");
+    } catch (error) {
+      toast.error(error instanceof ManagementError && error.status === 401 ? "Sign in as an owner before creating projects." : "Unable to create this project. Check the URLs and try again.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const copy = (value: string, label: string) => {
@@ -218,7 +297,8 @@ export default function Home() {
             <p className="text-sm font-semibold sm:hidden">{selected.name}</p>
           </div>
           <div className="flex items-center gap-2">
-            <span className="hidden items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 font-mono text-[10px] text-white/50 sm:flex"><span className="size-1.5 rounded-full bg-white" /> local preview</span>
+            <span className="hidden items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 font-mono text-[10px] text-white/50 sm:flex"><span className={`size-1.5 rounded-full ${apiState === "connected" ? "bg-white" : "bg-white/35"}`} /> {apiState === "connected" ? "owner API connected" : apiState === "loading" ? "checking owner access" : "owner sign-in required"}</span>
+            {apiState === "unauthorized" && <div className="hidden gap-1 sm:flex"><button onClick={() => beginDashboardSignIn("google")} className="rounded-md border border-white/15 px-2 py-1.5 font-mono text-[10px] text-white/70 hover:bg-white/10">Google</button><button onClick={() => beginDashboardSignIn("github")} className="rounded-md border border-white/15 px-2 py-1.5 font-mono text-[10px] text-white/70 hover:bg-white/10">GitHub</button></div>}
             <Button onClick={() => setNewProjectOpen(true)} className="h-9 rounded-lg bg-white px-3 text-xs font-semibold text-black hover:bg-white/90"><CirclePlus className="mr-1.5 size-4" /> New project</Button>
           </div>
         </header>
@@ -238,7 +318,7 @@ export default function Home() {
             </div>
             <div className="flex flex-wrap gap-2">
               <button onClick={() => copy(selected.id, "Project ID")} className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/12 px-3 text-xs text-white/70 transition hover:bg-white/10"><Clipboard className="size-3.5" /> Copy ID</button>
-              <button onClick={() => toast.info("Project activity is available when the dashboard is connected to the Nexuss-auth API.")} className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/12 px-3 text-xs text-white/70 transition hover:bg-white/10"><Ellipsis className="size-3.5" /> More</button>
+              <button onClick={() => void saveProject()} disabled={saving} className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/12 px-3 text-xs text-white/70 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"><Check className="size-3.5" /> {saving ? "Saving" : "Save project"}</button>
             </div>
           </section>
 
@@ -263,9 +343,9 @@ export default function Home() {
                   <span className="rounded-full border border-white/10 px-3 py-1 font-mono text-[10px] text-white/45">default path</span>
                 </div>
                 <div className="mt-7 grid gap-5 md:grid-cols-2">
-                  <label className="field-label">Project name<Input defaultValue={selected.name} className="field-input" /></label>
-                  <label className="field-label">Homepage URL<Input defaultValue={selected.homepage} className="field-input" /></label>
-                  <label className="field-label md:col-span-2">Redirect URL<Input defaultValue={selected.redirect} className="field-input font-mono text-xs" /></label>
+                  <label className="field-label">Project name<Input value={details.name} onChange={(event) => setDetails((current) => ({ ...current, name: event.target.value }))} className="field-input" /></label>
+                  <label className="field-label">Homepage URL<Input value={details.homepage} onChange={(event) => setDetails((current) => ({ ...current, homepage: event.target.value }))} className="field-input" /></label>
+                  <label className="field-label md:col-span-2">Redirect URL<Input value={details.redirect} onChange={(event) => setDetails((current) => ({ ...current, redirect: event.target.value }))} className="field-input font-mono text-xs" /></label>
                 </div>
               </section>
 
@@ -275,8 +355,8 @@ export default function Home() {
                   <img src={providerFieldUrl} alt="Abstract provider signal paths" className="hidden h-16 w-24 rounded-xl object-cover opacity-80 sm:block" />
                 </div>
                 <div className="mt-7 grid gap-3 md:grid-cols-2">
-                  <ProviderToggle label="Google" detail="Default provider · OAuth 2.0" active={googleEnabled} onChange={() => setGoogleEnabled((value) => !value)} icon={<span className="font-bold">G</span>} />
-                  <ProviderToggle label="GitHub" detail="Default provider · OAuth 2.0" active={githubEnabled} onChange={() => setGithubEnabled((value) => !value)} icon={<Github className="size-5" />} />
+                  <ProviderToggle label="Google" detail="Default provider · OAuth 2.0" active={googleEnabled} onChange={() => void toggleProvider("google")} icon={<span className="font-bold">G</span>} />
+                  <ProviderToggle label="GitHub" detail="Default provider · OAuth 2.0" active={githubEnabled} onChange={() => void toggleProvider("github")} icon={<Github className="size-5" />} />
                 </div>
                 <button type="button" onClick={() => setAdvancedOpen((open) => !open)} className="mt-6 flex w-full items-center justify-between border-t border-white/10 pt-5 text-left text-xs font-medium text-white/60 transition hover:text-white"><span className="flex items-center gap-2"><Settings2 className="size-4" /> Advanced provider controls</span>{advancedOpen ? <X className="size-4" /> : <Plus className="size-4" />}</button>
                 {advancedOpen && <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-4 text-sm text-white/55">Scope restrictions, account-linking rules, custom OIDC providers, and environment overrides will appear here. The default configuration remains intentionally small.</div>}
@@ -284,7 +364,7 @@ export default function Home() {
 
               <section className="workflow-sheet">
                 <div className="flex items-start gap-4"><span className="grid size-12 shrink-0 place-items-center rounded-2xl overflow-hidden bg-black border border-white/15"><img src={logoUrl} alt="Nexuss-auth project avatar" className="size-full object-cover" /></span><div><SectionLabel>03 · branding</SectionLabel><h2 className="text-xl font-bold tracking-[-0.04em]">The project tells users why it needs access</h2><p className="mt-1 text-sm text-white/45">Use the Nexuss-auth mark by default, then add a clear project description.</p></div></div>
-                <label className="field-label mt-7">Description<Textarea defaultValue={selected.description} className="field-input min-h-24 resize-none leading-6" /></label>
+                <label className="field-label mt-7">Description<Textarea value={details.description} onChange={(event) => setDetails((current) => ({ ...current, description: event.target.value }))} className="field-input min-h-24 resize-none leading-6" /></label>
               </section>
 
               <section id="integration" className="workflow-sheet">

@@ -10,6 +10,7 @@ class MemoryDatabase implements Database {
   users = new Map<string, UserRecord>();
   sessions = new Map<string, SessionRecord>();
   async close(): Promise<void> {}
+  async listProjects(): Promise<ProjectRecord[]> { return [...this.projects.values()]; }
   async getProject(projectId: string): Promise<ProjectRecord | null> { return this.projects.get(projectId) ?? null; }
   async upsertProject(project: ProjectRecord): Promise<ProjectRecord> { this.projects.set(project.projectId, project); return project; }
   async createOAuthState(state: OAuthStateRecord): Promise<void> { this.states.set(state.stateHash, state); }
@@ -45,13 +46,25 @@ const config = {
   githubClientSecret: 'github-secret',
 };
 
+const demoProject: ProjectRecord = {
+  projectId: 'demo',
+  name: 'Demo',
+  homepageUrl: 'https://demo.example.com',
+  description: 'Demo project',
+  avatarUrl: null,
+  allowedRedirectUris: ['https://demo.example.com/login'],
+  allowedOrigins: ['https://demo.example.com'],
+  enabledProviders: ['google', 'github'],
+  status: 'active',
+};
+
 test('server provisions a project and creates a provider redirect with one-time state', async () => {
   const db = new MemoryDatabase();
   const app = createAuthApp(config, db);
   const provision = await app.fetch(new Request('https://auth.example.com/v1/projects', {
     method: 'POST',
     headers: { authorization: 'Bearer admin-secret', 'content-type': 'application/json' },
-    body: JSON.stringify({ projectId: 'demo', name: 'Demo', allowedRedirectUris: ['https://demo.example.com/login'] }),
+    body: JSON.stringify(demoProject),
   }));
   assert.equal(provision.status, 201);
   const start = await app.fetch(new Request('https://auth.example.com/oauth/start/google?project_id=demo&redirect_uri=https%3A%2F%2Fdemo.example.com%2Flogin'));
@@ -62,7 +75,7 @@ test('server provisions a project and creates a provider redirect with one-time 
 
 test('server returns the user for a project-scoped session and clears it on logout', async () => {
   const db = new MemoryDatabase();
-  await db.upsertProject({ projectId: 'demo', name: 'Demo', allowedRedirectUris: ['https://demo.example.com/login'] });
+  await db.upsertProject(demoProject);
   db.users.set('u1', { id: 'u1', email: 'ada@example.com', name: 'Ada', avatarUrl: null });
   db.sessions.set(hashToken('session-token'), { tokenHash: hashToken('session-token'), userId: 'u1', projectId: 'demo', expiresAt: new Date(Date.now() + 60_000) });
   const app = createAuthApp(config, db);
@@ -78,4 +91,35 @@ test('server returns the user for a project-scoped session and clears it on logo
   assert.equal(logout.status, 204);
   assert.equal(db.sessions.size, 0);
   assert.match(logout.headers.get('set-cookie') ?? '', /Max-Age=0/);
+});
+
+test('admin can list and update provider configuration for a project', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject(demoProject);
+  const app = createAuthApp(config, db);
+  const listed = await app.fetch(new Request('https://auth.example.com/v1/projects', { headers: { authorization: 'Bearer admin-secret' } }));
+  assert.equal(listed.status, 200);
+  assert.equal((await listed.json()).projects[0].projectId, 'demo');
+  const updated = await app.fetch(new Request('https://auth.example.com/v1/projects/demo', {
+    method: 'PATCH',
+    headers: { authorization: 'Bearer admin-secret', 'content-type': 'application/json' },
+    body: JSON.stringify({ description: 'Dashboard project', enabledProviders: ['github'] }),
+  }));
+  assert.equal(updated.status, 200);
+  assert.deepEqual((await updated.json()).enabledProviders, ['github']);
+  const rejected = await app.fetch(new Request('https://auth.example.com/oauth/start/google?project_id=demo&redirect_uri=https%3A%2F%2Fdemo.example.com%2Flogin'));
+  assert.equal(rejected.status, 400);
+});
+
+test('an allowlisted owner session can manage projects without an admin bearer token', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject(demoProject);
+  db.users.set('owner', { id: 'owner', email: 'owner@example.com', name: 'Owner', avatarUrl: null });
+  db.sessions.set(hashToken('owner-session'), { tokenHash: hashToken('owner-session'), userId: 'owner', projectId: 'demo', expiresAt: new Date(Date.now() + 60_000) });
+  const app = createAuthApp({ ...config, adminEmails: ['owner@example.com'] }, db);
+  const result = await app.fetch(new Request('https://auth.example.com/v1/projects?project_id=demo', {
+    headers: { cookie: 'nex_auth_session=owner-session', 'x-nex-auth-project': 'demo' },
+  }));
+  assert.equal(result.status, 200);
+  assert.equal((await result.json()).projects[0].projectId, 'demo');
 });

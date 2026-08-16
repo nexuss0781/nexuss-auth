@@ -22,6 +22,7 @@ function config(): ServerConfig {
     stateTtlSeconds: Number(process.env.NEX_AUTH_STATE_TTL_SECONDS || 10 * 60),
     cookieName: process.env.NEX_AUTH_COOKIE_NAME || 'nex_auth_session',
     adminToken: required('NEX_AUTH_ADMIN_TOKEN'),
+    adminEmails: (process.env.NEX_AUTH_ADMIN_EMAILS || '').split(',').map((email) => email.trim().toLowerCase()).filter(Boolean),
     googleClientId: process.env.GOOGLE_CLIENT_ID || '',
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
     githubClientId: process.env.GITHUB_CLIENT_ID || '',

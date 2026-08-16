@@ -1,10 +1,18 @@
 {
   "version": 2,
-  "buildCommand": "npm run build -w packages/server",
-  "outputDirectory": ".",
+  "buildCommand": "npm run build",
+  "outputDirectory": "apps/dashboard/dist",
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/v1/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/oauth/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/health",
       "destination": "/api"
     }
   ]
