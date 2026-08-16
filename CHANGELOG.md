@@ -26,3 +26,8 @@ Added account-owned API token management across the Vercel service, dashboard, T
 ## 2026-08-16 — PyPI CLI 0.2.0
 
 Published `nexuss-auth` 0.2.0 to PyPI with browser-session token generation, token activation, metadata listing, revocation, and API-token project management commands.
+
+
+## 2026-08-16 — PyPI CLI 0.2.1
+
+Fixed token-only activation so `nexuss token use --value nxa_...` works without browser sign-in. Browser authentication remains required only for token creation, listing, and revocation.
