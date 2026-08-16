@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nexuss-auth"
-version = "0.2.2"
+version = "1.0.0"
 description = "User-authenticated project management CLI for Nexuss-auth"
 readme = "README.md"
 requires-python = ">=3.9"
