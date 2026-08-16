@@ -150,7 +150,7 @@ function systemDashboardProject(config: ServerConfig): ProjectRecord {
     homepageUrl: config.publicUrl,
     description: 'User-facing project management for Nexuss-auth.',
     avatarUrl: null,
-    allowedRedirectUris: [config.publicUrl],
+    allowedRedirectUris: [config.publicUrl, `${config.publicUrl}/dashboard`],
     allowedOrigins: [new URL(config.publicUrl).origin],
     enabledProviders: ['google', 'github'],
     status: 'active',

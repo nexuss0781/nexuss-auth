@@ -76,3 +76,12 @@
 - [x] Make the “Simple by default” guidance card dismissible and persist its dismissal across sessions.
 - [x] Keep project creation separate from project editing and prevent empty editor cards from appearing before creation.
 - [x] Verify responsive navigation, page transitions, and the complete create-to-settings flow.
+
+## Premium guest experience
+
+- [x] Audit the current routes and identify the landing-to-auth transition.
+- [x] Define the premium dark visual system for technical and non-technical guests.
+- [x] Generate and integrate atmospheric landing and auth background assets.
+- [x] Build a public landing page at `/` with a clear route to `/auth`.
+- [x] Build a dedicated `/auth` page with colored Google and GitHub provider icons.
+- [ ] Verify responsive layout, asset loading, provider navigation, build, and production deployment.
