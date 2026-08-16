@@ -21,3 +21,8 @@ The service now accepts the CLI’s user-session bearer credential for `/v1/me`,
 ## 2026-08-16 — Per-user API tokens
 
 Added account-owned API token management across the Vercel service, dashboard, TypeScript SDK, and PyPI CLI. Users can generate labelled tokens, list safe metadata, revoke tokens, activate a token in the CLI, and use it for project management. The service stores only token hashes, shows the secret once, tracks last use, and keeps admin automation credentials separate.
+
+
+## 2026-08-16 — PyPI CLI 0.2.0
+
+Published `nexuss-auth` 0.2.0 to PyPI with browser-session token generation, token activation, metadata listing, revocation, and API-token project management commands.
