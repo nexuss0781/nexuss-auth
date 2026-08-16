@@ -1,3 +1,0 @@
-[console_scripts]
-nexuss = nexuss_auth_cli.cli:main
-nexuss-auth = nexuss_auth_cli.cli:main
