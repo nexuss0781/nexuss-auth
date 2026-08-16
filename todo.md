@@ -59,3 +59,11 @@
 - [x] Inspect the production Google client configuration and callback alignment without exposing credentials.
 - [x] Correct the deployment or Google OAuth configuration if a mismatch is found.
 - [x] Redeploy and verify the Google OAuth authorization flow.
+
+## Public dashboard refinement
+
+- [x] Remove internal/debug labels from visible UI, including owner, local, agent, API, and connection-status language.
+- [x] Clarify the ordinary-user flow with explicit sign-in, project-creation, save, success, and project-management states.
+- [x] Ensure users see a clean empty state before creating their first project and a project list only after saved projects exist.
+- [x] Review all visible copy for concise, selective, user-agnostic product language.
+- [x] Verify the revised dashboard responsively and run the final build/tests.
