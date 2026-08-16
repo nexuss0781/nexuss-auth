@@ -3,6 +3,10 @@ import { createAuthApp } from '../packages/server/src/server.js';
 import { ParadoxDatabase } from '../packages/server/src/paradox-db.js';
 import type { ServerConfig } from '../packages/server/src/types.js';
 
+// Vercel's sandbox home directory is not guaranteed to exist. Parad uses
+// PARADOX_HOME for sync metadata, so keep that ephemeral runtime state in /tmp.
+if (!process.env.PARADOX_HOME) process.env.PARADOX_HOME = '/tmp/nexuss-auth-paradox';
+
 let app: ReturnType<typeof createAuthApp> | undefined;
 
 function required(name: string): string {
