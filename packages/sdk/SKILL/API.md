@@ -1,58 +1,91 @@
-# Direct API execution guide
+# Direct API guide
 
-Use direct HTTP only when the SDK or CLI cannot complete the immediate task. Prefer the SDK for browser integration and [`CLI.md`](./CLI.md) for project-scoped agent work.
+Use direct HTTP only when the SDK or CLI cannot complete the immediate task. Prefer the SDK for application sign-in, the CLI for account-scoped project management, and protected automation only for deliberate cross-project administration.
 
-Base URL: `https://nexuss-auth.vercel.app`. Use HTTPS in production.
+## Base URL and authority
 
-## Select identity before calling
+The production base URL is `https://nexuss-auth.vercel.app`. Use the deployed service URL for the target environment.
 
-| Use case | Credential |
-|---|---|
-| Browser application session | HTTP-only cookie with `x-nex-auth-project` |
-| Project-scoped agent work | Browser CLI session bearer or `nxa_` token through the CLI |
-| Protected server automation | `Authorization: Bearer <NEX_AUTH_ADMIN_TOKEN>` |
-
-Never send an admin credential to a browser. A project-scoped credential can access only its own projects.
-
-## Routes and required handling
-
-| Route | Method | Agent use |
+| Use case | Credential | Where it may be used |
 |---|---|---|
-| `/health` | `GET` | Confirm service availability; not OAuth correctness |
-| `/oauth/start/google` | `GET` | Navigate browser with `project_id` and exact `redirect_uri` |
-| `/oauth/start/github` | `GET` | Navigate browser with `project_id` and exact `redirect_uri` |
-| `/oauth/callback` | `GET` | Provider-only callback; do not call directly |
-| `/v1/me` | `GET` | Read current browser identity; `200` with `user: null` is signed out |
-| `/v1/logout` | `POST` | Clear service session, then clear local application state |
-| `/v1/projects` | `GET`, `POST` | List or create within caller scope |
-| `/v1/projects/:projectId` | `GET`, `PATCH`, `DELETE` | Inspect, minimally update, or explicitly delete within caller scope |
-| `/v1/tokens` | `GET`, `POST` | Browser-session token metadata and creation |
-| `/v1/tokens/:tokenId` | `DELETE` | Browser-session token revocation |
+| Browser application session | Nexuss Auth HTTP-only cookie | Browser requests only |
+| Project-scoped management | Browser CLI session or `nxa_` token | CLI or trusted local agent only |
+| Protected automation | `NEX_AUTH_ADMIN_TOKEN` | Protected server or CI only |
+| Cross-site application handoff | No management token | Application server sends the one-time handoff token with project ID |
 
-## Browser session request
+Never send an admin credential, project token, provider secret, cookie, OAuth code, state value, or handoff token to an untrusted browser client.
+
+## Public and application routes
+
+| Route | Method | Purpose | Required handling |
+|---|---:|---|---|
+| `/health` | `GET` | Service availability | A successful result does not prove project or provider correctness |
+| `/oauth/start/google` | `GET` | Start Google sign-in | Navigate the browser with `project_id`, exact `redirect_uri`, and optional `handoff=1` |
+| `/oauth/start/github` | `GET` | Start GitHub sign-in | Navigate the browser with `project_id`, exact `redirect_uri`, and optional `handoff=1` |
+| `/oauth/callback` | `GET` | Provider callback handled by Nexuss Auth | Do not call directly from application code |
+| `/v1/me` | `GET` | Read the current Nexuss Auth identity | Use browser credentials and project context; `user: null` means signed out |
+| `/v1/logout` | `POST` | Clear the Nexuss Auth session | Clear application-local state separately |
+| `/v1/handoff/exchange` | `POST` | Exchange a one-time server handoff | Call only from the trusted application server; never from browser code |
+| `/v1/projects` | `GET`, `POST` | List or create projects within caller scope | Use CLI or protected automation; inspect before mutation |
+| `/v1/projects/:projectId` | `GET`, `PATCH`, `DELETE` | Inspect, minimally update, or explicitly delete one project | Preserve ownership and exact configuration |
+
+## OAuth start
+
+Start OAuth by browser navigation, not by expecting a JSON response:
+
+```text
+https://nexuss-auth.vercel.app/oauth/start/google?project_id=PROJECT_ID&redirect_uri=ENCODED_CALLBACK
+```
+
+For a cross-site application, add `handoff=1`. Nexuss Auth validates that the project is active and that the requested provider is enabled before checking the exact redirect URI.
+
+## Browser identity
 
 ```ts
 const response = await fetch(`${authUrl}/v1/me?project_id=${encodeURIComponent(projectId)}`, {
   credentials: 'include',
   headers: { 'x-nex-auth-project': projectId },
 });
+
+if (!response.ok) throw new Error(`Nexuss Auth user lookup failed: ${response.status}`);
+const { user } = await response.json();
 ```
 
-`/v1/me` returns either `{ "user": { ... } }` or `{ "user": null }`. Both are valid `200` responses.
+A successful response is either `{ "user": { ... } }` or `{ "user": null }`. Both are valid `200` responses.
 
-## Project payload rules
+## Server-side handoff exchange
 
-Create requests require `projectId`, `name`, `homepageUrl`, `allowedRedirectUris`, `allowedOrigins`, `enabledProviders`, and `status`. Use exact redirect URIs and origins. Patch only fields that the task changes. Inspect a project before patch or delete.
+When the callback receives `handoff_token`, the application server exchanges it once:
+
+```ts
+const response = await fetch(`${authUrl}/v1/handoff/exchange`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ projectId, handoffToken }),
+});
+
+if (response.status === 401) throw new Error('Handoff is invalid, expired, or already used');
+if (!response.ok) throw new Error(`Handoff exchange failed: ${response.status}`);
+const { user } = await response.json();
+```
+
+The exchange consumes the handoff record. A replay must fail. The application must create its own secure session from the verified user and then redirect to a clean URL.
+
+## Project management payloads
+
+Create requests require `projectId`, `name`, `homepageUrl`, at least one `allowedRedirectUris` entry, `enabledProviders`, and `status`. `allowedOrigins` should contain the exact application origins. Patch only fields that the task changes. Inspect before patch or delete.
 
 ## Status handling
 
-| Status | Agent action |
-|---:|---|
-| `400` | Correct the supplied URL, provider, or payload |
-| `401` | Re-authenticate or replace the protected credential |
-| `403` | Stop; scope does not permit the operation |
-| `404` | Recheck route and project ID; do not create a substitute automatically |
-| `409` | Inspect the existing project before retrying |
-| `5xx` | Preserve inputs, check `/health`, and retry only after recovery |
+| Status | Meaning | Action |
+|---:|---|---|
+| `200` | Request succeeded | Validate the response body and session state |
+| `302` | OAuth navigation started or callback completed | Follow as browser navigation; do not parse as an API success |
+| `400` | Invalid project, provider, callback, or payload | Correct the supplied value before retrying |
+| `401` | Signed out, invalid credential, or invalid handoff | Re-authenticate or start a fresh handoff |
+| `403` | Authority or origin not permitted | Stop and correct scope or origin |
+| `404` | Route or project not found | Recheck the route and project ID; do not create a substitute automatically |
+| `409` | Project ID or mutation conflict | Inspect the existing project before retrying |
+| `5xx` | Service, provider, or persistence failure | Check `/health` and protected logs, then recover deliberately |
 
-Never log authorization headers, cookies, full token values, OAuth codes, state values, or full provider authorization URLs.
+Never log authorization headers, cookies, full tokens, OAuth codes, state values, handoff tokens, or complete provider authorization URLs.

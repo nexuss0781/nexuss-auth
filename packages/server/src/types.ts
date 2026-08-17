@@ -33,6 +33,14 @@ export interface OAuthStateRecord {
   projectId: string;
   provider: Provider;
   redirectUri: string;
+  handoff: boolean;
+  expiresAt: Date;
+}
+
+export interface HandoffRecord {
+  handoffHash: string;
+  projectId: string;
+  userId: string;
   expiresAt: Date;
 }
 
@@ -86,6 +94,8 @@ export interface Database {
   deleteProject(projectId: string): Promise<void>;
   createOAuthState(state: OAuthStateRecord): Promise<void>;
   consumeOAuthState(stateHash: string): Promise<OAuthStateRecord | null>;
+  createHandoff(handoff: HandoffRecord): Promise<void>;
+  consumeHandoff(handoffHash: string): Promise<HandoffRecord | null>;
   findOrCreateUser(profile: OAuthProfile): Promise<UserRecord>;
   createSession(input: CreateSessionInput): Promise<void>;
   getSession(tokenHash: string): Promise<SessionRecord | null>;

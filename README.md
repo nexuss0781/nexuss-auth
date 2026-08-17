@@ -112,8 +112,12 @@ const auth = createAuth({
   authUrl: 'https://auth.example.com',
 });
 
-(document.querySelector('#google') as HTMLButtonElement).onclick = () => auth.signInWithGoogle();
-(document.querySelector('#github') as HTMLButtonElement).onclick = () => auth.signInWithGitHub();
+(document.querySelector('#google') as HTMLButtonElement).onclick = () => auth.signInWithGoogle({
+  redirectUri: 'https://dashboard.example.com/auth/callback',
+});
+(document.querySelector('#github') as HTMLButtonElement).onclick = () => auth.signInWithGitHub({
+  redirectUri: 'https://dashboard.example.com/auth/callback',
+});
 
 const user = await auth.getUser();
 if (user) console.log(`Signed in as ${user.name ?? user.email ?? user.id}`);
@@ -121,19 +125,22 @@ if (user) console.log(`Signed in as ${user.name ?? user.email ?? user.id}`);
 await auth.logout();
 ```
 
-For server-rendered applications, generate a login URL without using browser globals:
+For server-rendered applications, generate a login URL without using browser globals. For a cross-site deployment, request a server-side handoff:
 
 ```ts
 const url = auth.getLoginUrl('google', {
-  redirectUri: 'https://dashboard.example.com/login',
+  redirectUri: 'https://dashboard.example.com/auth/callback',
+  handoff: true,
 });
 ```
 
-The SDK sends credentials with requests so the browser can use the HTTP-only session cookie. The application origin must correspond to an allowlisted redirect URI origin, and the auth service must return the appropriate CORS headers.
+The callback receives a short-lived, one-time `handoff_token`. The application server must exchange it through `POST /v1/handoff/exchange` with the project ID, create its own HTTP-only session, and then redirect to a clean application URL. Never exchange the handoff token in browser code.
+
+The SDK sends credentials with requests so a same-site browser can use the HTTP-only session cookie. The application origin must correspond to an allowlisted redirect URI origin, and the auth service must return the appropriate CORS headers. Use the handoff flow when the application and auth service are cross-site.
 
 ## Security model
 
-Nex-auth stores only SHA-256 hashes of OAuth state values and session tokens. OAuth state is one-time use and expires quickly. Sessions are HTTP-only, `SameSite=Lax`, and `Secure` when the service public URL uses HTTPS. Provider credentials and the admin token are server-side secrets. Production deployments must use HTTPS, a managed PostgreSQL instance, secret injection, exact redirect allowlists, rate limiting at the edge, structured logging without token values, and scheduled cleanup of expired state and sessions.
+Nex-auth stores only SHA-256 hashes of OAuth state values, session tokens, and handoff records. OAuth state and handoff records are one-time use and expire quickly. Sessions are HTTP-only, `SameSite=Lax`, and `Secure` when the service public URL uses HTTPS. Provider credentials and the admin token are server-side secrets. Production deployments must use HTTPS, a managed PostgreSQL instance or the supported Paradox adapter, secret injection, exact redirect allowlists, rate limiting at the edge, structured logging without token values, and scheduled cleanup of expired state, sessions, and handoff records.
 
 This initial version intentionally keeps the persistence contract separate from the HTTP layer so a future adapter can support another database without changing the SDK API.
 

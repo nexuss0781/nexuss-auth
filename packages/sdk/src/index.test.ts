@@ -9,6 +9,16 @@ test('buildLoginUrl creates a project-scoped Google login URL', () => {
   assert.equal(url.searchParams.get('redirect_uri'), 'https://demo.example.com/login');
 });
 
+test('buildLoginUrl requests a server-side handoff when enabled', () => {
+  const url = new URL(buildLoginUrl({ projectId: 'demo', authUrl: 'https://auth.example.com' }, 'google', 'https://demo.example.com/auth/callback', { handoff: true }));
+  assert.equal(url.searchParams.get('handoff'), '1');
+});
+
+test('buildLoginUrl omits handoff by default', () => {
+  const url = new URL(buildLoginUrl({ projectId: 'demo', authUrl: 'https://auth.example.com' }, 'google', 'https://demo.example.com/auth/callback'));
+  assert.equal(url.searchParams.get('handoff'), null);
+});
+
 test('buildLoginUrl rejects an unsupported provider', () => {
   assert.throws(() => buildLoginUrl({ projectId: 'demo', authUrl: 'https://auth.example.com' }, 'twitter' as never, 'https://demo.example.com/login'));
 });

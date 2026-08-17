@@ -4,6 +4,7 @@ import type {
   ApiTokenRecord,
   CreateSessionInput,
   Database,
+  HandoffRecord,
   OAuthProfile,
   OAuthStateRecord,
   ProjectRecord,
@@ -50,6 +51,13 @@ const schemaStatements = [
     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
     provider TEXT NOT NULL CHECK (provider IN ('google', 'github')),
     redirect_uri TEXT NOT NULL,
+    handoff INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS oauth_handoffs (
+    handoff_hash TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS sessions (
@@ -77,6 +85,7 @@ const schemaStatements = [
 ];
 
 const projectMigrationStatements = [
+  "ALTER TABLE oauth_states ADD COLUMN handoff INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE projects ADD COLUMN owner_user_id TEXT",
   "ALTER TABLE projects ADD COLUMN homepage_url TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT ''",
@@ -229,16 +238,31 @@ export class ParadoxDatabase implements Database {
 
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.run((db) => {
-      db.execute('INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, expires_at) VALUES (?, ?, ?, ?, ?)', [state.stateHash, state.projectId, state.provider, state.redirectUri, iso(state.expiresAt)]);
+      db.execute('INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, expires_at) VALUES (?, ?, ?, ?, ?, ?)', [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff ? 1 : 0, iso(state.expiresAt)]);
     });
   }
 
   async consumeOAuthState(stateHash: string): Promise<OAuthStateRecord | null> {
     return this.run((db) => {
-      const row = one<{ state_hash: string; project_id: string; provider: 'google' | 'github'; redirect_uri: string; expires_at: string }>(db, 'SELECT state_hash, project_id, provider, redirect_uri, expires_at FROM oauth_states WHERE state_hash = ?', [stateHash]);
+      const row = one<{ state_hash: string; project_id: string; provider: 'google' | 'github'; redirect_uri: string; handoff: number; expires_at: string }>(db, 'SELECT state_hash, project_id, provider, redirect_uri, handoff, expires_at FROM oauth_states WHERE state_hash = ?', [stateHash]);
       if (!row) return null;
       db.execute('DELETE FROM oauth_states WHERE state_hash = ?', [stateHash]);
-      return { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, expiresAt: date(row.expires_at) };
+      return { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff === 1, expiresAt: date(row.expires_at) };
+    });
+  }
+
+  async createHandoff(handoff: HandoffRecord): Promise<void> {
+    await this.run((db) => {
+      db.execute('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, expires_at) VALUES (?, ?, ?, ?)', [handoff.handoffHash, handoff.projectId, handoff.userId, iso(handoff.expiresAt)]);
+    });
+  }
+
+  async consumeHandoff(handoffHash: string): Promise<HandoffRecord | null> {
+    return this.run((db) => {
+      const row = one<{ handoff_hash: string; project_id: string; user_id: string; expires_at: string }>(db, 'SELECT handoff_hash, project_id, user_id, expires_at FROM oauth_handoffs WHERE handoff_hash = ?', [handoffHash]);
+      if (!row) return null;
+      db.execute('DELETE FROM oauth_handoffs WHERE handoff_hash = ?', [handoffHash]);
+      return { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, expiresAt: date(row.expires_at) };
     });
   }
 

@@ -3,6 +3,7 @@ import type {
   ApiTokenRecord,
   CreateSessionInput,
   Database,
+  HandoffRecord,
   OAuthProfile,
   OAuthStateRecord,
   ProjectRecord,
@@ -98,9 +99,9 @@ export class PostgresDatabase implements Database {
 
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, expires_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [state.stateHash, state.projectId, state.provider, state.redirectUri, state.expiresAt],
+      `INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff, state.expiresAt],
     );
   }
 
@@ -113,17 +114,44 @@ export class PostgresDatabase implements Database {
         project_id: string;
         provider: 'google' | 'github';
         redirect_uri: string;
+        handoff: boolean;
         expires_at: Date;
       }>(
         `DELETE FROM oauth_states WHERE state_hash = $1
-         RETURNING state_hash, project_id, provider, redirect_uri, expires_at`,
+         RETURNING state_hash, project_id, provider, redirect_uri, handoff, expires_at`,
         [stateHash],
       );
       await client.query('COMMIT');
       const row = result.rows[0];
       return row
-        ? { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, expiresAt: row.expires_at }
+        ? { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff, expiresAt: row.expires_at }
         : null;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createHandoff(handoff: HandoffRecord): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, expires_at) VALUES ($1, $2, $3, $4)`,
+      [handoff.handoffHash, handoff.projectId, handoff.userId, handoff.expiresAt],
+    );
+  }
+
+  async consumeHandoff(handoffHash: string): Promise<HandoffRecord | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query<{ handoff_hash: string; project_id: string; user_id: string; expires_at: Date }>(
+        `DELETE FROM oauth_handoffs WHERE handoff_hash = $1 RETURNING handoff_hash, project_id, user_id, expires_at`,
+        [handoffHash],
+      );
+      await client.query('COMMIT');
+      const row = result.rows[0];
+      return row ? { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, expiresAt: row.expires_at } : null;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
