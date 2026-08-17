@@ -162,6 +162,8 @@ function one<T extends Record<string, unknown>>(db: ParadConnection, sql: string
 
 export class ParadoxDatabase implements Database {
   private readonly config: ParadConfig;
+  private connection: ParadConnection | null = null;
+  private initialized = false;
   private lock: Promise<void> = Promise.resolve();
 
   constructor(config: ParadConfig) {
@@ -170,38 +172,61 @@ export class ParadoxDatabase implements Database {
 
   async close(): Promise<void> {
     await this.lock;
+    this.connection?.close();
+    this.connection = null;
+    this.initialized = false;
   }
 
-  private async run<T>(work: (db: ParadConnection) => Promise<T> | T): Promise<T> {
+  private async assertRemoteSnapshot(): Promise<void> {
+    const url = new URL(`${this.config.gatewayUrl}/download`);
+    url.searchParams.set('database_name', this.config.name);
+    url.searchParams.set('project_id', this.config.project);
+    const response = await fetch(url, { headers: { 'X-API-Key': this.config.apiKey } });
+    if (!response.ok) throw new Error(`Paradox remote snapshot unavailable (HTTP ${response.status})`);
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength === 0) throw new Error('Paradox remote snapshot is empty');
+  }
+
+  private async open(): Promise<ParadConnection> {
+    if (!this.connection) {
+      await this.assertRemoteSnapshot();
+      const dbPath = `/tmp/${this.config.name}.db`;
+      this.connection = await connect({
+        name: this.config.name,
+        project: this.config.project,
+        dbPath,
+        gatewayUrl: this.config.gatewayUrl,
+        apiKey: this.config.apiKey,
+        passphrase: this.config.passphrase,
+        autoSync: false,
+        pullOnStartup: false,
+      });
+      await this.connection.pull();
+    }
+    if (!this.initialized) {
+      for (const statement of schemaStatements) this.connection.execute(statement);
+      for (const statement of projectMigrationStatements) {
+        try { this.connection.execute(statement); } catch { /* Existing databases already have this column. */ }
+      }
+      this.initialized = true;
+    }
+    return this.connection;
+  }
+
+  private async run<T>(work: (db: ParadConnection) => Promise<T> | T, write = false): Promise<T> {
     let release!: () => void;
     const previous = this.lock;
     this.lock = new Promise<void>((resolve) => { release = resolve; });
     await previous;
 
-    const dbPath = `/tmp/${this.config.name}.db`;
-    const db = await connect({
-      name: this.config.name,
-      project: this.config.project,
-      dbPath,
-      gatewayUrl: this.config.gatewayUrl,
-      apiKey: this.config.apiKey,
-      passphrase: this.config.passphrase,
-      autoSync: false,
-      pullOnStartup: true,
-    });
     try {
-      for (const statement of schemaStatements) db.execute(statement);
-      for (const statement of projectMigrationStatements) {
-        try { db.execute(statement); } catch { /* Existing databases already have this column. */ }
-      }
-      return await work(db);
+      const db = await this.open();
+      if (write) await db.pull();
+      const result = await work(db);
+      if (write) await db.push();
+      return result;
     } finally {
-      try {
-        await db.push();
-      } finally {
-        db.close();
-        release();
-      }
+      release();
     }
   }
 
@@ -227,19 +252,19 @@ export class ParadoxDatabase implements Database {
         [project.projectId, project.ownerUserId, project.name, project.homepageUrl, project.description, project.avatarUrl, JSON.stringify(project.allowedRedirectUris), JSON.stringify(project.allowedOrigins), JSON.stringify(project.enabledProviders), project.status],
       );
       return project;
-    });
+    }, true);
   }
 
   async deleteProject(projectId: string): Promise<void> {
     await this.run((db) => {
       db.execute('DELETE FROM projects WHERE project_id = ?', [projectId]);
-    });
+    }, true);
   }
 
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.run((db) => {
       db.execute('INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, expires_at) VALUES (?, ?, ?, ?, ?, ?)', [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff ? 1 : 0, iso(state.expiresAt)]);
-    });
+    }, true);
   }
 
   async consumeOAuthState(stateHash: string): Promise<OAuthStateRecord | null> {
@@ -248,13 +273,13 @@ export class ParadoxDatabase implements Database {
       if (!row) return null;
       db.execute('DELETE FROM oauth_states WHERE state_hash = ?', [stateHash]);
       return { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff === 1, expiresAt: date(row.expires_at) };
-    });
+    }, true);
   }
 
   async createHandoff(handoff: HandoffRecord): Promise<void> {
     await this.run((db) => {
       db.execute('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, expires_at) VALUES (?, ?, ?, ?)', [handoff.handoffHash, handoff.projectId, handoff.userId, iso(handoff.expiresAt)]);
-    });
+    }, true);
   }
 
   async consumeHandoff(handoffHash: string): Promise<HandoffRecord | null> {
@@ -263,7 +288,7 @@ export class ParadoxDatabase implements Database {
       if (!row) return null;
       db.execute('DELETE FROM oauth_handoffs WHERE handoff_hash = ?', [handoffHash]);
       return { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, expiresAt: date(row.expires_at) };
-    });
+    }, true);
   }
 
   async findOrCreateUser(profile: OAuthProfile): Promise<UserRecord> {
@@ -286,13 +311,13 @@ export class ParadoxDatabase implements Database {
       const row = one<{ id: string; email: string | null; name: string | null; avatar_url: string | null }>(db, 'SELECT id, email, name, avatar_url FROM users WHERE id = ?', [userId]);
       if (!row) throw new Error('User disappeared after creation');
       return { id: row.id, email: row.email, name: row.name, avatarUrl: row.avatar_url };
-    });
+    }, true);
   }
 
   async createSession(input: CreateSessionInput): Promise<void> {
     await this.run((db) => {
       db.execute('INSERT INTO sessions (token_hash, user_id, project_id, expires_at) VALUES (?, ?, ?, ?)', [input.tokenHash, input.userId, input.projectId, iso(input.expiresAt)]);
-    });
+    }, true);
   }
 
   async getSession(tokenHash: string): Promise<SessionRecord | null> {
@@ -312,13 +337,13 @@ export class ParadoxDatabase implements Database {
   async deleteSession(tokenHash: string): Promise<void> {
     await this.run((db) => {
       db.execute('DELETE FROM sessions WHERE token_hash = ?', [tokenHash]);
-    });
+    }, true);
   }
 
   async createApiToken(token: ApiTokenRecord): Promise<void> {
     await this.run((db) => {
       db.execute('INSERT INTO api_tokens (token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [token.tokenId, token.userId, token.tokenHash, token.tokenPrefix, token.label, iso(token.createdAt), token.lastUsedAt ? iso(token.lastUsedAt) : null, token.revokedAt ? iso(token.revokedAt) : null]);
-    });
+    }, true);
   }
 
   async listApiTokens(userId: string): Promise<ApiTokenRecord[]> {
@@ -335,14 +360,14 @@ export class ParadoxDatabase implements Database {
   async touchApiToken(tokenId: string): Promise<void> {
     await this.run((db) => {
       db.execute('UPDATE api_tokens SET last_used_at = ? WHERE token_id = ?', [iso(new Date()), tokenId]);
-    });
+    }, true);
   }
 
   async revokeApiToken(userId: string, tokenId: string): Promise<boolean> {
     return this.run((db) => {
       const result = db.execute('UPDATE api_tokens SET revoked_at = ? WHERE token_id = ? AND user_id = ? AND revoked_at IS NULL', [iso(new Date()), tokenId, userId]);
       return result.changes > 0;
-    });
+    }, true);
   }
 }
 

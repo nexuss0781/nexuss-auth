@@ -38,8 +38,8 @@ function getApp(): ReturnType<typeof createAuthApp> {
     gatewayUrl: required('PARADOX_GATEWAY_URL'),
     apiKey: required('PARADOX_API_KEY'),
     passphrase: required('PARADOX_PASSPHRASE'),
-    project: process.env.PARADOX_PROJECT || 'nexuss-auth',
-    name: process.env.PARADOX_DATABASE || 'nexuss-auth',
+    project: process.env.PARADOX_PROJECT || process.env.PARADOX_PROJECT_NAME || 'nexuss-auth',
+    name: process.env.PARADOX_DATABASE || process.env.PARADOX_DATABASE_NAME || 'nexuss-auth',
   }));
   return app;
 }
