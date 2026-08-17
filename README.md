@@ -146,7 +146,7 @@ This initial version intentionally keeps the persistence contract separate from 
 
 ## Vercel deployment with Paradox-db
 
-The Vercel deployment uses the existing Paradox-db gateway as the persistent store. It does not create PostgreSQL or a new database. The serverless handler hydrates the encrypted database snapshot, executes the request, pushes changes back to Paradox-db, and closes the local temporary connection.
+The Vercel deployment uses the existing Paradox-db gateway as the persistent store. It does not create PostgreSQL or a new database. A warm serverless instance keeps one encrypted database connection in memory, explicitly pulls the remote snapshot before initialization and before writes, never uploads snapshots for read-only requests, and pushes only after successful mutations. If the remote snapshot cannot be loaded, the handler fails closed instead of serving an empty database.
 
 Set the following Vercel environment variables before deploying:
 
@@ -163,5 +163,7 @@ PARADOX_PASSPHRASE
 PARADOX_PROJECT
 PARADOX_DATABASE
 ```
+
+`PARADOX_PROJECT` and `PARADOX_DATABASE` must identify the same production Paradox project and database that contain the Nexuss Auth records. The handler also accepts the aliases `PARADOX_PROJECT_NAME` and `PARADOX_DATABASE_NAME`, but the canonical names above are recommended.
 
 Use the gateway base URL including `/v1`, for example `https://paradox-db.onrender.com/v1`. `PARADOX_API_KEY` must be an API key issued by the Paradox-db gateway. `PARADOX_PASSPHRASE` is the encryption passphrase for the Nex-auth database; generate a long random value and keep it in Vercel secrets. The Vercel callback URL is `/oauth/callback` on the deployed auth domain and must be registered in both OAuth provider dashboards.

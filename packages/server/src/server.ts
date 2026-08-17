@@ -218,7 +218,15 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
       }
 
       try {
-        if (url.pathname === '/health' && request.method === 'GET') return jsonResponse({ ok: true }, 200, headers);
+        if (url.pathname === '/health' && request.method === 'GET') {
+          try {
+            const projects = await db.listProjects();
+            return jsonResponse({ ok: true, persistence: 'ready', projectCount: projects.length }, 200, headers);
+          } catch (error) {
+            console.error('Nexuss Auth persistence health check failed', error);
+            return jsonResponse({ ok: false, error: 'persistence_unavailable' }, 503, headers);
+          }
+        }
 
         if (url.pathname.startsWith('/oauth/start/') && request.method === 'GET') {
           const provider = providerFrom(url.pathname.split('/').pop());
