@@ -231,6 +231,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
             projectId,
             provider,
             redirectUri,
+            handoff: url.searchParams.get('handoff') === '1',
             expiresAt: new Date(Date.now() + config.stateTtlSeconds * 1000),
           });
           return Response.redirect(authorizationUrl(config, provider, state, callbackUri(config)), 302);
@@ -255,16 +256,39 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
             expiresAt: new Date(Date.now() + config.sessionTtlSeconds * 1000),
           });
           const secure = new URL(config.publicUrl).protocol === 'https:';
+          const handoffToken = stateRecord.handoff ? randomToken(32) : null;
+          if (handoffToken) {
+            await db.createHandoff({
+              handoffHash: hashToken(handoffToken),
+              projectId: stateRecord.projectId,
+              userId: user.id,
+              expiresAt: new Date(Date.now() + 120_000),
+            });
+          }
+          let destination = isLoopbackRedirect(stateRecord.redirectUri)
+            ? redirectWith(redirectWith(stateRecord.redirectUri, 'nex_auth', 'success'), 'session_token', sessionToken)
+            : redirectWith(stateRecord.redirectUri, 'nex_auth', 'success');
+          if (handoffToken) destination = redirectWith(destination, 'handoff_token', handoffToken);
           return new Response(null, {
             status: 302,
             headers: {
-              location: isLoopbackRedirect(stateRecord.redirectUri)
-                ? redirectWith(redirectWith(stateRecord.redirectUri, 'nex_auth', 'success'), 'session_token', sessionToken)
-                : redirectWith(stateRecord.redirectUri, 'nex_auth', 'success'),
+              location: destination,
               'set-cookie': serializeCookie(config.cookieName, sessionToken, { secure, maxAge: config.sessionTtlSeconds }),
               'referrer-policy': 'no-referrer',
             },
           });
+        }
+
+        if (url.pathname === '/v1/handoff/exchange' && request.method === 'POST') {
+          const body = await jsonBody(request);
+          const handoffToken = typeof body.handoffToken === 'string' ? body.handoffToken : '';
+          const requestedProjectId = typeof body.projectId === 'string' ? body.projectId : '';
+          if (!handoffToken || !requestedProjectId) return jsonResponse({ error: 'handoff_required' }, 400, headers);
+          const handoff = await db.consumeHandoff(hashToken(handoffToken));
+          if (!handoff || handoff.expiresAt.getTime() <= Date.now() || handoff.projectId !== requestedProjectId) return jsonResponse({ error: 'invalid_handoff' }, 401, headers);
+          const user = await db.getUser(handoff.userId);
+          if (!user) return jsonResponse({ error: 'user_not_found' }, 401, headers);
+          return jsonResponse({ user }, 200, headers);
         }
 
         if (url.pathname === '/v1/me' && request.method === 'GET') {

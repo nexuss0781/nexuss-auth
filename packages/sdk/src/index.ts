@@ -15,6 +15,8 @@ export interface NexAuthConfig {
 
 export interface SignInOptions {
   redirectUri?: string;
+  /** Request a short-lived one-time server-side handoff token after OAuth. */
+  handoff?: boolean;
 }
 
 export interface UserResponse {
@@ -60,12 +62,13 @@ export interface NexAuthApiToken {
   revokedAt: string | null;
 }
 
-export function buildLoginUrl(config: Pick<NexAuthConfig, 'projectId' | 'authUrl'>, provider: Provider, redirectUri: string): string {
+export function buildLoginUrl(config: Pick<NexAuthConfig, 'projectId' | 'authUrl'>, provider: Provider, redirectUri: string, options: Pick<SignInOptions, 'handoff'> = {}): string {
   if (!config.projectId.trim()) throw new Error('Nex-auth projectId is required');
   if (!['google', 'github'].includes(provider)) throw new Error(`Unsupported provider: ${provider}`);
   const url = new URL(`/oauth/start/${provider}`, config.authUrl);
   url.searchParams.set('project_id', config.projectId);
   url.searchParams.set('redirect_uri', redirectUri);
+  if (options.handoff) url.searchParams.set('handoff', '1');
   return url.toString();
 }
 
@@ -88,7 +91,7 @@ export class NexAuthClient {
   getLoginUrl(provider: Provider, options: SignInOptions = {}): string {
     const redirectUri = options.redirectUri ?? browserLocation()?.href;
     if (!redirectUri) throw new Error('redirectUri is required outside a browser');
-    return buildLoginUrl(this.config, provider, redirectUri);
+    return buildLoginUrl(this.config, provider, redirectUri, options);
   }
 
   signIn(provider: Provider, options: SignInOptions = {}): void {

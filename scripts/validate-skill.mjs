@@ -4,7 +4,7 @@ import { join, relative } from 'node:path';
 const root = new URL('..', import.meta.url).pathname;
 const skillDir = join(root, 'SKILL');
 const requiredFiles = ['SKILL.md', 'CLI.md', 'API.md', 'INTEGRATION.md', 'AUTOMATION.md', 'OPERATIONS.md', 'VERSION.md'];
-const requiredRoutes = ['/health', '/oauth/start/google', '/oauth/start/github', '/oauth/callback', '/v1/me', '/v1/logout', '/v1/projects', '/v1/projects/:projectId'];
+const requiredRoutes = ['/health', '/oauth/start/google', '/oauth/start/github', '/oauth/callback', '/v1/me', '/v1/logout', '/v1/handoff/exchange', '/v1/projects', '/v1/projects/:projectId'];
 const forbiddenPatterns = [/\bephemeral\b/i, /\brenderSigned/i, /\brenderSignIn/i, /server-rendered/i, /limited words/i];
 
 function fail(message) {
@@ -41,7 +41,7 @@ for (const [path, content] of contents) {
   }
 }
 
-for (const directive of ['NEX_AUTH_ADMIN_TOKEN', 'HTTP-only', 'ownership', 'Google', 'GitHub']) {
+for (const directive of ['NEX_AUTH_ADMIN_TOKEN', 'HTTP-only', 'ownership', 'Google', 'GitHub', 'handoff', 'same-site', 'single-use', 'redirect_uri_not_allowed']) {
   if (!combined.toLowerCase().includes(directive.toLowerCase())) fail(`required directive is missing: ${directive}`);
 }
 

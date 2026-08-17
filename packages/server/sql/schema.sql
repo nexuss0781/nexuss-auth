@@ -58,10 +58,22 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
   provider TEXT NOT NULL CHECK (provider IN ('google', 'github')),
   redirect_uri TEXT NOT NULL,
+  handoff BOOLEAN NOT NULL DEFAULT false,
   expires_at TIMESTAMPTZ NOT NULL
 );
 
+ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS handoff BOOLEAN NOT NULL DEFAULT false;
+
 CREATE INDEX IF NOT EXISTS oauth_states_expires_at_idx ON oauth_states(expires_at);
+
+CREATE TABLE IF NOT EXISTS oauth_handoffs (
+  handoff_hash TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS oauth_handoffs_expires_at_idx ON oauth_handoffs(expires_at);
 
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,

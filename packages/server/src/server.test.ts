@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hashToken } from './crypto.js';
 import { createAuthApp } from './server.js';
-import type { ApiTokenRecord, Database, OAuthProfile, OAuthStateRecord, ProjectRecord, SessionRecord, UserRecord } from './types.js';
+import type { ApiTokenRecord, Database, HandoffRecord, OAuthProfile, OAuthStateRecord, ProjectRecord, SessionRecord, UserRecord } from './types.js';
 
 class MemoryDatabase implements Database {
   projects = new Map<string, ProjectRecord>();
   states = new Map<string, OAuthStateRecord>();
+  handoffs = new Map<string, HandoffRecord>();
   users = new Map<string, UserRecord>();
   sessions = new Map<string, SessionRecord>();
   apiTokens = new Map<string, ApiTokenRecord>();
@@ -20,6 +21,12 @@ class MemoryDatabase implements Database {
     const state = this.states.get(stateHash) ?? null;
     this.states.delete(stateHash);
     return state;
+  }
+  async createHandoff(handoff: HandoffRecord): Promise<void> { this.handoffs.set(handoff.handoffHash, handoff); }
+  async consumeHandoff(handoffHash: string): Promise<HandoffRecord | null> {
+    const handoff = this.handoffs.get(handoffHash) ?? null;
+    this.handoffs.delete(handoffHash);
+    return handoff;
   }
   async findOrCreateUser(profile: OAuthProfile): Promise<UserRecord> {
     const user = { id: 'u1', email: profile.email, name: profile.name, avatarUrl: profile.avatarUrl };
@@ -79,6 +86,27 @@ test('server provisions a project and creates a provider redirect with one-time 
   assert.equal(start.status, 302);
   assert.match(start.headers.get('location') ?? '', /^https:\/\/accounts\.google\.com/);
   assert.equal(db.states.size, 1);
+});
+
+test('handoff exchange returns the project user once and rejects replay', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject(demoProject);
+  db.users.set('u1', { id: 'u1', email: 'ada@example.com', name: 'Ada', avatarUrl: null });
+  db.handoffs.set(hashToken('handoff-token'), { handoffHash: hashToken('handoff-token'), projectId: 'demo', userId: 'u1', expiresAt: new Date(Date.now() + 60_000) });
+  const app = createAuthApp(config, db);
+  const exchange = await app.fetch(new Request('https://auth.example.com/v1/handoff/exchange', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ projectId: 'demo', handoffToken: 'handoff-token' }),
+  }));
+  assert.equal(exchange.status, 200);
+  assert.deepEqual((await exchange.json()).user, db.users.get('u1'));
+  const replay = await app.fetch(new Request('https://auth.example.com/v1/handoff/exchange', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ projectId: 'demo', handoffToken: 'handoff-token' }),
+  }));
+  assert.equal(replay.status, 401);
 });
 
 test('server returns the user for a project-scoped session and clears it on logout', async () => {
