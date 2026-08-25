@@ -11,6 +11,7 @@ export function authorizationUrl(
   provider: Provider,
   state: string,
   redirectUri: string,
+  purpose: 'sign_in' | 'github_authorization' = 'sign_in',
 ): string {
   if (provider === 'google') {
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -27,7 +28,7 @@ export function authorizationUrl(
   const url = new URL('https://github.com/login/oauth/authorize');
   url.searchParams.set('client_id', config.githubClientId);
   url.searchParams.set('redirect_uri', redirectUri);
-  url.searchParams.set('scope', 'read:user user:email');
+  url.searchParams.set('scope', purpose === 'github_authorization' ? 'repo' : 'read:user user:email');
   url.searchParams.set('state', state);
   return url.toString();
 }
@@ -118,6 +119,10 @@ export async function exchangeCode(
   return {
     provider,
     providerAccountId: String(profile.id ?? ''),
+    accessToken,
+    refreshToken: stringOrNull(tokenPayload.refresh_token),
+    expiresInSeconds: typeof tokenPayload.expires_in === 'number' ? tokenPayload.expires_in : null,
+    scopes: typeof tokenPayload.scope === 'string' ? tokenPayload.scope.split(/[,\s]+/).filter(Boolean) : [],
     email,
     emailVerified,
     name: stringOrNull(profile.name) ?? stringOrNull(profile.login),

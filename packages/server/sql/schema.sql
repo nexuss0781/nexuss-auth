@@ -59,10 +59,12 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   provider TEXT NOT NULL CHECK (provider IN ('google', 'github')),
   redirect_uri TEXT NOT NULL,
   handoff BOOLEAN NOT NULL DEFAULT false,
-  expires_at TIMESTAMPTZ NOT NULL
+  expires_at TIMESTAMPTZ NOT NULL,
+  purpose TEXT NOT NULL DEFAULT 'sign_in'
 );
 
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS handoff BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'sign_in';
 
 CREATE INDEX IF NOT EXISTS oauth_states_expires_at_idx ON oauth_states(expires_at);
 
@@ -70,8 +72,31 @@ CREATE TABLE IF NOT EXISTS oauth_handoffs (
   handoff_hash TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  github_grant_token TEXT,
   expires_at TIMESTAMPTZ NOT NULL
 );
+
+ALTER TABLE oauth_handoffs ADD COLUMN IF NOT EXISTS github_grant_token TEXT;
+
+CREATE TABLE IF NOT EXISTS github_connections (
+  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  github_account_id TEXT NOT NULL,
+  login TEXT NOT NULL,
+  access_token TEXT NOT NULL,
+  refresh_token TEXT,
+  expires_at TIMESTAMPTZ,
+  scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS github_grants (
+  grant_hash TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS github_grants_project_user_idx ON github_grants(project_id, user_id);
 
 CREATE INDEX IF NOT EXISTS oauth_handoffs_expires_at_idx ON oauth_handoffs(expires_at);
 

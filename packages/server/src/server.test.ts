@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hashToken } from './crypto.js';
 import { createAuthApp } from './server.js';
-import type { ApiTokenRecord, Database, HandoffRecord, OAuthProfile, OAuthStateRecord, ProjectRecord, SessionRecord, UserRecord } from './types.js';
+import type { ApiTokenRecord, Database, GithubConnectionRecord, GithubGrantRecord, HandoffRecord, OAuthProfile, OAuthStateRecord, ProjectRecord, SessionRecord, UserRecord } from './types.js';
 
 class MemoryDatabase implements Database {
   projects = new Map<string, ProjectRecord>();
   states = new Map<string, OAuthStateRecord>();
   handoffs = new Map<string, HandoffRecord>();
+  githubConnections = new Map<string, GithubConnectionRecord>();
+  githubGrants = new Map<string, GithubGrantRecord>();
   users = new Map<string, UserRecord>();
   sessions = new Map<string, SessionRecord>();
   apiTokens = new Map<string, ApiTokenRecord>();
@@ -28,6 +30,10 @@ class MemoryDatabase implements Database {
     this.handoffs.delete(handoffHash);
     return handoff;
   }
+  async saveGithubConnection(connection: GithubConnectionRecord): Promise<void> { this.githubConnections.set(connection.userId, connection); }
+  async getGithubConnection(userId: string): Promise<GithubConnectionRecord | null> { return this.githubConnections.get(userId) ?? null; }
+  async createGithubGrant(grant: GithubGrantRecord): Promise<void> { this.githubGrants.set(grant.grantHash, grant); }
+  async getGithubGrant(grantHash: string): Promise<GithubGrantRecord | null> { return this.githubGrants.get(grantHash) ?? null; }
   async findOrCreateUser(profile: OAuthProfile): Promise<UserRecord> {
     const user = { id: 'u1', email: profile.email, name: profile.name, avatarUrl: profile.avatarUrl };
     this.users.set(user.id, user);
@@ -86,6 +92,30 @@ test('server provisions a project and creates a provider redirect with one-time 
   assert.equal(start.status, 302);
   assert.match(start.headers.get('location') ?? '', /^https:\/\/accounts\.google\.com/);
   assert.equal(db.states.size, 1);
+});
+
+test('GitHub authorization requests repository scope and grant access stays project-scoped', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject(demoProject);
+  const app = createAuthApp(config, db);
+  const start = await app.fetch(new Request('https://auth.example.com/oauth/start/github?project_id=demo&redirect_uri=https%3A%2F%2Fdemo.example.com%2Flogin&handoff=1&purpose=github_authorization'));
+  assert.equal(start.status, 302);
+  assert.match(start.headers.get('location') ?? '', /scope=repo/);
+  assert.equal(db.states.values().next().value?.purpose, 'github_authorization');
+  db.users.set('u1', { id: 'u1', email: 'ada@example.com', name: 'Ada', avatarUrl: null });
+  db.githubConnections.set('u1', { userId: 'u1', githubAccountId: '42', login: 'ada', accessToken: 'github-secret-token', refreshToken: null, expiresAt: null, scopes: ['repo'], updatedAt: new Date() });
+  db.githubGrants.set(hashToken('grant-token'), { grantHash: hashToken('grant-token'), projectId: 'demo', userId: 'u1', expiresAt: new Date(Date.now() + 60_000) });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify([{ id: 7, name: 'private-repo', full_name: 'ada/private-repo', private: true, description: null, html_url: 'https://github.com/ada/private-repo', default_branch: 'main' }]), { status: 200, headers: { 'content-type': 'application/json' } });
+  try {
+    const repositories = await app.fetch(new Request('https://auth.example.com/v1/github/repositories?project_id=demo', { headers: { authorization: 'Bearer grant-token' } }));
+    assert.equal(repositories.status, 200);
+    assert.equal((await repositories.json()).repositories[0].full_name, 'ada/private-repo');
+    const wrongProject = await app.fetch(new Request('https://auth.example.com/v1/github/repositories?project_id=other', { headers: { authorization: 'Bearer grant-token' } }));
+    assert.equal(wrongProject.status, 401);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('handoff exchange returns the project user once and rejects replay', async () => {

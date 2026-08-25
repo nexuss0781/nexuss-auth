@@ -1,5 +1,6 @@
 export type Provider = 'google' | 'github';
 export type ProjectStatus = 'active' | 'disabled';
+export type OAuthPurpose = 'sign_in' | 'github_authorization';
 
 export interface ServerConfig {
   port: number;
@@ -34,6 +35,7 @@ export interface OAuthStateRecord {
   provider: Provider;
   redirectUri: string;
   handoff: boolean;
+  purpose?: OAuthPurpose;
   expiresAt: Date;
 }
 
@@ -41,6 +43,7 @@ export interface HandoffRecord {
   handoffHash: string;
   projectId: string;
   userId: string;
+  githubGrantToken?: string | null;
   expiresAt: Date;
 }
 
@@ -52,6 +55,10 @@ export interface OAuthProfile {
   name: string | null;
   avatarUrl: string | null;
   username: string | null;
+  accessToken?: string;
+  refreshToken?: string | null;
+  expiresInSeconds?: number | null;
+  scopes?: string[];
 }
 
 export interface UserRecord {
@@ -86,6 +93,24 @@ export interface CreateSessionInput {
   expiresAt: Date;
 }
 
+export interface GithubGrantRecord {
+  grantHash: string;
+  projectId: string;
+  userId: string;
+  expiresAt: Date;
+}
+
+export interface GithubConnectionRecord {
+  userId: string;
+  githubAccountId: string;
+  login: string;
+  accessToken: string;
+  refreshToken: string | null;
+  expiresAt: Date | null;
+  scopes: string[];
+  updatedAt: Date;
+}
+
 export interface Database {
   close(): Promise<void>;
   listProjects(ownerUserId?: string): Promise<ProjectRecord[]>;
@@ -96,6 +121,10 @@ export interface Database {
   consumeOAuthState(stateHash: string): Promise<OAuthStateRecord | null>;
   createHandoff(handoff: HandoffRecord): Promise<void>;
   consumeHandoff(handoffHash: string): Promise<HandoffRecord | null>;
+  saveGithubConnection(connection: GithubConnectionRecord): Promise<void>;
+  getGithubConnection(userId: string): Promise<GithubConnectionRecord | null>;
+  createGithubGrant(grant: GithubGrantRecord): Promise<void>;
+  getGithubGrant(grantHash: string): Promise<GithubGrantRecord | null>;
   findOrCreateUser(profile: OAuthProfile): Promise<UserRecord>;
   createSession(input: CreateSessionInput): Promise<void>;
   getSession(tokenHash: string): Promise<SessionRecord | null>;
