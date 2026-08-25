@@ -59,11 +59,13 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   provider TEXT NOT NULL CHECK (provider IN ('google', 'github')),
   redirect_uri TEXT NOT NULL,
   handoff BOOLEAN NOT NULL DEFAULT false,
+  user_id UUID,
   expires_at TIMESTAMPTZ NOT NULL,
   purpose TEXT NOT NULL DEFAULT 'sign_in'
 );
 
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS handoff BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS user_id UUID;
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'sign_in';
 
 CREATE INDEX IF NOT EXISTS oauth_states_expires_at_idx ON oauth_states(expires_at);
