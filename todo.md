@@ -195,3 +195,9 @@
 - [x] Add server-only repository listing and immediate clone-token endpoints.
 - [x] Document the central authorization and relying-application contract in `SKILL/API.md` and `SKILL/INTEGRATION.md`.
 - [x] Validate the central server build and complete authentication regression suite.
+
+## OAuth Start 500 Repair
+
+- [x] Diagnose the deployed OAuth start failure as a database-schema migration gap in existing Postgres deployments.
+- [x] Apply OAuth-purpose, handoff-grant, GitHub connection, and GitHub grant migrations automatically during startup.
+- [x] Return a safe error code and support ID instead of an opaque `internal_error` for OAuth preparation failures.

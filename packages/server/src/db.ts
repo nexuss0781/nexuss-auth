@@ -52,6 +52,30 @@ export class PostgresDatabase implements Database {
     this.pool = new Pool({ connectionString: databaseUrl, max: 10 });
   }
 
+  async initialize(): Promise<void> {
+    await this.pool.query(`
+      ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'sign_in';
+      ALTER TABLE oauth_handoffs ADD COLUMN IF NOT EXISTS github_grant_token TEXT;
+      CREATE TABLE IF NOT EXISTS github_connections (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        github_account_id TEXT NOT NULL,
+        login TEXT NOT NULL,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        expires_at TIMESTAMPTZ,
+        scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS github_grants (
+        grant_hash TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS github_grants_project_user_idx ON github_grants(project_id, user_id);
+    `);
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }

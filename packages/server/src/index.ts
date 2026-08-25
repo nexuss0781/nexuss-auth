@@ -9,6 +9,7 @@ export type * from './types.js';
 if (import.meta.url === `file://${process.argv[1]}`) {
   const config = loadConfig();
   const db = new PostgresDatabase(config.databaseUrl);
+  await db.initialize();
   const server = startAuthServer(config, db);
   console.log(`Nex-auth listening on port ${config.port}`);
   const shutdown = async () => {

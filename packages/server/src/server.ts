@@ -236,16 +236,22 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const purpose: OAuthPurpose = url.searchParams.get('purpose') === 'github_authorization' ? 'github_authorization' : 'sign_in';
           if (purpose === 'github_authorization' && (provider !== 'github' || url.searchParams.get('handoff') !== '1')) return jsonResponse({ error: 'invalid_authorization_purpose' }, 400, headers);
           const state = randomToken(32);
-          await db.createOAuthState({
-            stateHash: hashToken(state),
-            projectId,
-            provider,
-            redirectUri,
-            handoff: url.searchParams.get('handoff') === '1',
-            purpose,
-            expiresAt: new Date(Date.now() + config.stateTtlSeconds * 1000),
-          });
-          return Response.redirect(authorizationUrl(config, provider, state, callbackUri(config), purpose), 302);
+          try {
+            await db.createOAuthState({
+              stateHash: hashToken(state),
+              projectId,
+              provider,
+              redirectUri,
+              handoff: url.searchParams.get('handoff') === '1',
+              purpose,
+              expiresAt: new Date(Date.now() + config.stateTtlSeconds * 1000),
+            });
+            return Response.redirect(authorizationUrl(config, provider, state, callbackUri(config), purpose), 302);
+          } catch (error) {
+            const errorId = randomUUID();
+            console.error('OAuth start failed while preparing state', { errorId, provider, projectId, error });
+            return jsonResponse({ error: 'oauth_state_persistence_failed', errorId, message: 'Nexuss Auth could not prepare this authorization. Redeploy the central auth service so its database migration can run, then try again.' }, 503, headers);
+          }
         }
 
         if (url.pathname === '/oauth/callback' && request.method === 'GET') {
@@ -422,8 +428,9 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
 
         return jsonResponse({ error: 'not_found' }, 404, headers);
       } catch (error) {
-        console.error(error);
-        return jsonResponse({ error: 'internal_error' }, 500, headers);
+        const errorId = randomUUID();
+        console.error('Nexuss Auth request failed', { errorId, path: url.pathname, error });
+        return jsonResponse({ error: 'internal_error', errorId, message: 'Nexuss Auth could not complete this request. Use the error ID when checking the deployment logs.' }, 500, headers);
       }
     },
   };
