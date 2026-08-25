@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { authorizationUrl, exchangeCode } from './providers.js';
 import { hashToken, jsonResponse, parseCookies, randomToken, serializeCookie, safeEqual } from './crypto.js';
 import { randomUUID } from 'node:crypto';
+import { inflateRawSync } from 'node:zlib';
 import type { Database, OAuthPurpose, ProjectStatus, Provider, ProjectRecord, ServerConfig, UserRecord } from './types.js';
 
 const providers = new Set<Provider>(['google', 'github']);
@@ -26,6 +27,17 @@ function isLoopbackRedirect(redirectUri: string): boolean {
   } catch {
     return false;
   }
+}
+
+function decodeWorkflowZip(bytes: Uint8Array): string {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const chunks: string[] = [];
+  for (let offset = 0; offset + 30 <= bytes.byteLength;) {
+    if (view.getUint32(offset, true) !== 0x04034b50) break;
+    const method = view.getUint16(offset + 8, true); const compressedSize = view.getUint32(offset + 18, true); const nameLength = view.getUint16(offset + 26, true); const extraLength = view.getUint16(offset + 28, true); const dataStart = offset + 30 + nameLength + extraLength; const dataEnd = dataStart + compressedSize;
+    if (dataEnd > bytes.byteLength) break;
+    const compressed = bytes.slice(dataStart, dataEnd); const decoded = method === 8 ? inflateRawSync(compressed) : compressed; chunks.push(new TextDecoder().decode(decoded)); offset = dataEnd;
+  }
+  return chunks.join("\n").slice(0, 500_000);
 }
 
 function isAllowedRedirect(project: ProjectRecord, redirectUri: string): boolean {
@@ -329,7 +341,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           return jsonResponse({ user, ...(handoff.githubGrantToken ? { githubGrantToken: handoff.githubGrantToken } : {}) }, 200, headers);
         }
 
-        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/file' || url.pathname === '/v1/github/search' || url.pathname === '/v1/github/pulls' || url.pathname === '/v1/github/pull-files') && request.method === 'GET') {
+        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/pull-files' || url.pathname === '/v1/github/search' || url.pathname === '/v1/github/runs' || url.pathname === '/v1/github/jobs' || url.pathname === '/v1/github/job-logs' || url.pathname === '/v1/github/pulls') && request.method === 'GET') {
           const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
           if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
           const grant = await db.getGithubGrant(hashToken(grantToken));
@@ -348,6 +360,33 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const ref = url.searchParams.get('ref')?.trim() || '';
           const path = url.searchParams.get('path')?.trim() || '';
           if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || (ref && (ref.length > 200 || /[\u0000-\u001f]/.test(ref)))) return jsonResponse({ error: 'invalid_repository_reference' }, 400, headers);
+          if (url.pathname === '/v1/github/runs') {
+            const runsUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs?per_page=30`;
+            const githubResponse = await fetch(runsUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+            const body = await githubResponse.json() as { workflow_runs?: Array<{ id?: number; name?: string; display_title?: string; status?: string; conclusion?: string | null; event?: string; html_url?: string; created_at?: string; updated_at?: string; run_started_at?: string; head_branch?: string; head_sha?: string; run_number?: number; workflow_id?: number }> };
+            const runs = Array.isArray(body.workflow_runs) ? body.workflow_runs.slice(0, 30).filter((run) => typeof run.id === 'number').map((run) => ({ id: run.id, name: run.name || 'Workflow', title: run.display_title || run.name || 'Workflow run', status: run.status || 'unknown', conclusion: run.conclusion || null, event: run.event || 'unknown', htmlUrl: run.html_url || null, createdAt: run.created_at || null, updatedAt: run.updated_at || null, startedAt: run.run_started_at || null, branch: run.head_branch || null, sha: run.head_sha || null, runNumber: run.run_number || null, workflowId: run.workflow_id || null })) : [];
+            return jsonResponse({ owner, repo, runs }, 200, headers);
+          }
+          if (url.pathname === '/v1/github/jobs') {
+            const runId = Number(url.searchParams.get('run_id') || '0');
+            if (!Number.isInteger(runId) || runId < 1) return jsonResponse({ error: 'invalid_run_id' }, 400, headers);
+            const jobsUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/jobs?per_page=100`;
+            const githubResponse = await fetch(jobsUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'run_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+            const body = await githubResponse.json() as { jobs?: Array<{ id?: number; name?: string; status?: string; conclusion?: string | null; started_at?: string | null; completed_at?: string | null; html_url?: string; steps?: Array<{ name?: string; status?: string; conclusion?: string | null; number?: number }> }> };
+            const jobs = Array.isArray(body.jobs) ? body.jobs.slice(0, 100).filter((job) => typeof job.id === 'number').map((job) => ({ id: job.id, name: job.name || 'Job', status: job.status || 'unknown', conclusion: job.conclusion || null, startedAt: job.started_at || null, completedAt: job.completed_at || null, htmlUrl: job.html_url || null, steps: Array.isArray(job.steps) ? job.steps.slice(0, 100).map((step) => ({ name: step.name || 'Step', status: step.status || 'unknown', conclusion: step.conclusion || null, number: step.number || null })) : [] })) : [];
+            return jsonResponse({ owner, repo, runId, jobs }, 200, headers);
+          }
+          if (url.pathname === '/v1/github/job-logs') {
+            const jobId = Number(url.searchParams.get('job_id') || '0');
+            if (!Number.isInteger(jobId) || jobId < 1) return jsonResponse({ error: 'invalid_job_id' }, 400, headers);
+            const logsUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${jobId}/logs`;
+            const githubResponse = await fetch(logsUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'job_logs_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+            const logs = decodeWorkflowZip(new Uint8Array(await githubResponse.arrayBuffer()));
+            return jsonResponse({ owner, repo, jobId, logs, truncated: logs.length >= 500_000 }, 200, headers);
+          }
           if (url.pathname === '/v1/github/pulls') {
             const state = url.searchParams.get('state') === 'closed' ? 'closed' : 'open';
             const pullsUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=${state}&sort=updated&direction=desc&per_page=50`;
