@@ -210,7 +210,7 @@ export class ParadoxDatabase implements Database {
     if (bytes.byteLength === 0) throw new Error('Paradox remote snapshot is empty');
   }
 
-  private async open(): Promise<ParadConnection> {
+  private async open(pullBeforeWork = false): Promise<ParadConnection> {
     if (!this.connection) {
       await this.assertRemoteSnapshot();
       const dbPath = `/tmp/${this.config.name}.db`;
@@ -225,6 +225,11 @@ export class ParadoxDatabase implements Database {
         pullOnStartup: false,
       });
       await this.connection.pull();
+    } else if (pullBeforeWork) {
+      // Pull before, not after, migrations. Pulling an old remote snapshot here
+      // would erase locally-applied columns immediately before a write.
+      await this.connection.pull();
+      this.initialized = false;
     }
     if (!this.initialized) {
       for (const statement of schemaStatements) this.connection.execute(statement);
@@ -243,8 +248,7 @@ export class ParadoxDatabase implements Database {
     await previous;
 
     try {
-      const db = await this.open();
-      if (write) await db.pull();
+      const db = await this.open(write);
       const result = await work(db);
       if (write) await db.push();
       return result;
