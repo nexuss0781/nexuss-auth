@@ -329,7 +329,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           return jsonResponse({ user, ...(handoff.githubGrantToken ? { githubGrantToken: handoff.githubGrantToken } : {}) }, 200, headers);
         }
 
-        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/file') && request.method === 'GET') {
+        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/file' || url.pathname === '/v1/github/search') && request.method === 'GET') {
           const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
           if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
           const grant = await db.getGithubGrant(hashToken(grantToken));
@@ -348,6 +348,16 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const ref = url.searchParams.get('ref')?.trim() || '';
           const path = url.searchParams.get('path')?.trim() || '';
           if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || (ref && (ref.length > 200 || /[\u0000-\u001f]/.test(ref)))) return jsonResponse({ error: 'invalid_repository_reference' }, 400, headers);
+          if (url.pathname === '/v1/github/search') {
+            const query = url.searchParams.get('q')?.trim() || '';
+            if (!query || query.length > 200 || /[\u0000-\u001f]/.test(query)) return jsonResponse({ error: 'invalid_search_query' }, 400, headers);
+            const searchUrl = `https://api.github.com/search/code?q=${encodeURIComponent(`${query} repo:${owner}/${repo}`)}&per_page=50`;
+            const githubResponse = await fetch(searchUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+            const body = await githubResponse.json() as { total_count?: number; incomplete_results?: boolean; items?: Array<{ path?: string; name?: string; sha?: string; html_url?: string; score?: number }> };
+            const results = Array.isArray(body.items) ? body.items.slice(0, 50).filter((item) => typeof item.path === 'string').map((item) => ({ path: item.path, name: item.name || item.path?.split('/').pop() || item.path, sha: item.sha || '', htmlUrl: item.html_url || null, score: typeof item.score === 'number' ? item.score : null })) : [];
+            return jsonResponse({ owner, repo, query, totalCount: typeof body.total_count === 'number' ? body.total_count : results.length, incompleteResults: Boolean(body.incomplete_results), results }, 200, headers);
+          }
           if (url.pathname === '/v1/github/tree') {
             const treeUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(ref || 'HEAD')}?recursive=1`;
             const githubResponse = await fetch(treeUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
