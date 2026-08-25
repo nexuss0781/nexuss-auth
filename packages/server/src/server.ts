@@ -329,7 +329,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           return jsonResponse({ user, ...(handoff.githubGrantToken ? { githubGrantToken: handoff.githubGrantToken } : {}) }, 200, headers);
         }
 
-        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/file' || url.pathname === '/v1/github/search') && request.method === 'GET') {
+        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/file' || url.pathname === '/v1/github/search' || url.pathname === '/v1/github/pulls' || url.pathname === '/v1/github/pull-files') && request.method === 'GET') {
           const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
           if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
           const grant = await db.getGithubGrant(hashToken(grantToken));
@@ -348,6 +348,25 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const ref = url.searchParams.get('ref')?.trim() || '';
           const path = url.searchParams.get('path')?.trim() || '';
           if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || (ref && (ref.length > 200 || /[\u0000-\u001f]/.test(ref)))) return jsonResponse({ error: 'invalid_repository_reference' }, 400, headers);
+          if (url.pathname === '/v1/github/pulls') {
+            const state = url.searchParams.get('state') === 'closed' ? 'closed' : 'open';
+            const pullsUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=${state}&sort=updated&direction=desc&per_page=50`;
+            const githubResponse = await fetch(pullsUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+            const body = await githubResponse.json() as Array<{ number?: number; title?: string; state?: string; draft?: boolean; user?: { login?: string }; html_url?: string; created_at?: string; updated_at?: string; head?: { ref?: string; sha?: string }; base?: { ref?: string } }>;
+            const pulls = Array.isArray(body) ? body.slice(0, 50).filter((pull) => typeof pull.number === 'number').map((pull) => ({ number: pull.number, title: pull.title || `Pull request #${pull.number}`, state: pull.state === 'closed' ? 'closed' : 'open', draft: Boolean(pull.draft), author: pull.user?.login || 'unknown', htmlUrl: pull.html_url || null, createdAt: pull.created_at || null, updatedAt: pull.updated_at || null, headRef: pull.head?.ref || null, headSha: pull.head?.sha || null, baseRef: pull.base?.ref || null })) : [];
+            return jsonResponse({ owner, repo, state, pulls }, 200, headers);
+          }
+          if (url.pathname === '/v1/github/pull-files') {
+            const number = Number(url.searchParams.get('number') || '0');
+            if (!Number.isInteger(number) || number < 1 || number > 1_000_000) return jsonResponse({ error: 'invalid_pull_number' }, 400, headers);
+            const filesUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/files?per_page=100`;
+            const githubResponse = await fetch(filesUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'pull_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+            const body = await githubResponse.json() as Array<{ filename?: string; status?: string; additions?: number; deletions?: number; changes?: number; patch?: string; sha?: string; blob_url?: string; raw_url?: string }>;
+            const files = Array.isArray(body) ? body.slice(0, 100).filter((file) => typeof file.filename === 'string').map((file) => ({ filename: file.filename, status: file.status || 'modified', additions: typeof file.additions === 'number' ? file.additions : 0, deletions: typeof file.deletions === 'number' ? file.deletions : 0, changes: typeof file.changes === 'number' ? file.changes : 0, patch: typeof file.patch === 'string' ? file.patch.slice(0, 100_000) : null, sha: file.sha || null, blobUrl: file.blob_url || null, rawUrl: file.raw_url || null })) : [];
+            return jsonResponse({ owner, repo, number, files }, 200, headers);
+          }
           if (url.pathname === '/v1/github/search') {
             const query = url.searchParams.get('q')?.trim() || '';
             if (!query || query.length > 200 || /[\u0000-\u001f]/.test(query)) return jsonResponse({ error: 'invalid_search_query' }, 400, headers);
@@ -379,6 +398,26 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
           const content = new TextDecoder().decode(bytes);
           return jsonResponse({ owner, repo, ref: ref || 'HEAD', path: body.path || path, name: body.name || path.split('/').pop(), sha: body.sha || null, size, content, htmlUrl: body.html_url || null }, 200, headers);
+        }
+
+        if (url.pathname === '/v1/github/comment' && request.method === 'POST') {
+          const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
+          if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
+          const grant = await db.getGithubGrant(hashToken(grantToken));
+          if (!grant || grant.projectId !== projectId || grant.expiresAt.getTime() <= Date.now()) return jsonResponse({ error: 'invalid_github_grant' }, 401, headers);
+          const connection = await db.getGithubConnection(grant.userId);
+          if (!connection) return jsonResponse({ error: 'github_not_connected' }, 409, headers);
+          const owner = url.searchParams.get('owner')?.trim() || '';
+          const repo = url.searchParams.get('repo')?.trim() || '';
+          const number = Number(url.searchParams.get('number') || '0');
+          if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || !Number.isInteger(number) || number < 1 || number > 1_000_000) return jsonResponse({ error: 'invalid_pull_reference' }, 400, headers);
+          const body = await jsonBody(request);
+          const comment = typeof body.body === 'string' ? body.body.trim() : '';
+          if (!comment || comment.length > 10_000) return jsonResponse({ error: 'invalid_comment_body' }, 400, headers);
+          const githubResponse = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}/comments`, { method: 'POST', headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'content-type': 'application/json', 'user-agent': 'Nexuss-Auth' }, body: JSON.stringify({ body: comment }) });
+          if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 401 ? 'github_authorization_expired' : 'github_comment_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+          const result = await githubResponse.json() as { id?: number; html_url?: string; body?: string; created_at?: string };
+          return jsonResponse({ owner, repo, number, id: result.id || null, htmlUrl: result.html_url || null, body: result.body || comment, createdAt: result.created_at || null }, 201, headers);
         }
 
         if (url.pathname === '/v1/me' && request.method === 'GET') {
