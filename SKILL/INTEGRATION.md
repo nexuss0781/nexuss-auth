@@ -208,3 +208,24 @@ Complete every check before declaring integration complete:
 ## 11. Security rules
 
 The application must not handle Google or GitHub client secrets. The browser must not receive management credentials. Handoff tokens and OAuth codes are bearer-like, short-lived secrets and must be handled only by the trusted callback server. The application must enforce its own authorization policy after identity verification. Nexuss Auth identity proves who signed in; it does not automatically authorize access to every application resource.
+
+## 12. Central GitHub repository authorization for relying applications
+
+A relying application that needs to list or import a user’s GitHub repositories must not implement a second GitHub OAuth client. It should start the central flow by navigating the browser to:
+
+```text
+https://auth.example.com/oauth/start/github?project_id=PROJECT_ID&redirect_uri=ENCODED_APPLICATION_CALLBACK&handoff=1&purpose=github_authorization
+```
+
+The central service validates the project, provider, and exact callback, completes GitHub OAuth using the credentials held by Nexuss Auth, and stores the GitHub access token in the central encrypted database. The application receives only a short-lived, opaque `githubGrantToken` through its trusted server-side `/v1/handoff/exchange` call. The browser must never receive or exchange this value.
+
+The application server may then call these central routes with `Authorization: Bearer GITHUB_GRANT_TOKEN` and the expected `project_id` query parameter:
+
+```text
+GET /v1/github/repositories?project_id=PROJECT_ID
+GET /v1/github/clone-token?project_id=PROJECT_ID
+```
+
+The first route returns sanitized repository metadata. The second route returns the provider access token only to the trusted application server for the immediate clone operation; the application must keep it in memory, must not persist it, and must not return it to the browser. The grant is scoped to the central project and expires. A `401` means the user must authorize GitHub again.
+
+For this mode, the GitHub OAuth application’s provider callback is Nexuss Auth’s callback, not the relying application’s callback. The central project must enable GitHub, and its allowed redirect list must contain the relying application callback exactly. The relying application needs only `NEXUSS_AUTH_URL`, `NEXUSS_AUTH_PROJECT_ID`, and `NEXUSS_AUTH_REDIRECT_URI`; it does not need `GITHUB_CLIENT_ID`, `GITHUB_SECRET`, or a GitHub OAuth client of its own.

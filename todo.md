@@ -186,3 +186,12 @@
 - [x] Authenticate project management through user API tokens without accepting admin tokens as user tokens.
 - [x] Add dashboard, TypeScript SDK, and PyPI CLI token management commands.
 - [x] Add security tests, update documentation, deploy, and verify production behavior.
+
+## Central GitHub Authorization Grants
+
+- [x] Keep GitHub provider credentials and access tokens owned by Nexuss Auth.
+- [x] Add explicit `github_authorization` OAuth purpose and repository scope.
+- [x] Store encrypted GitHub connections and project-scoped opaque application grants.
+- [x] Add server-only repository listing and immediate clone-token endpoints.
+- [x] Document the central authorization and relying-application contract in `SKILL/API.md` and `SKILL/INTEGRATION.md`.
+- [x] Validate the central server build and complete authentication regression suite.

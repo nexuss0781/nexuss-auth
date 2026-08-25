@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { authorizationUrl, exchangeCode } from './providers.js';
 import { hashToken, jsonResponse, parseCookies, randomToken, serializeCookie, safeEqual } from './crypto.js';
 import { randomUUID } from 'node:crypto';
-import type { Database, ProjectStatus, Provider, ProjectRecord, ServerConfig } from './types.js';
+import type { Database, OAuthPurpose, ProjectStatus, Provider, ProjectRecord, ServerConfig } from './types.js';
 
 const providers = new Set<Provider>(['google', 'github']);
 const MAX_BODY_BYTES = 16 * 1024;
@@ -233,6 +233,8 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           if (!provider || !projectId || !project || project.status !== 'active' || !project.enabledProviders.includes(provider)) return jsonResponse({ error: 'invalid_project_or_provider' }, 400, headers);
           const redirectUri = url.searchParams.get('redirect_uri');
           if (!redirectUri || !isAllowedRedirect(project, redirectUri)) return jsonResponse({ error: 'redirect_uri_not_allowed' }, 400, headers);
+          const purpose: OAuthPurpose = url.searchParams.get('purpose') === 'github_authorization' ? 'github_authorization' : 'sign_in';
+          if (purpose === 'github_authorization' && (provider !== 'github' || url.searchParams.get('handoff') !== '1')) return jsonResponse({ error: 'invalid_authorization_purpose' }, 400, headers);
           const state = randomToken(32);
           await db.createOAuthState({
             stateHash: hashToken(state),
@@ -240,9 +242,10 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
             provider,
             redirectUri,
             handoff: url.searchParams.get('handoff') === '1',
+            purpose,
             expiresAt: new Date(Date.now() + config.stateTtlSeconds * 1000),
           });
-          return Response.redirect(authorizationUrl(config, provider, state, callbackUri(config)), 302);
+          return Response.redirect(authorizationUrl(config, provider, state, callbackUri(config), purpose), 302);
         }
 
         if (url.pathname === '/oauth/callback' && request.method === 'GET') {
@@ -256,6 +259,9 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const profile = await exchangeCode(config, stateRecord.provider, code, callbackUri(config));
           if (!profile.providerAccountId) throw new Error('OAuth provider returned no account id');
           const user = await db.findOrCreateUser(profile);
+          if (stateRecord.purpose === 'github_authorization' && stateRecord.provider === 'github' && profile.accessToken) {
+            await db.saveGithubConnection({ userId: user.id, githubAccountId: profile.providerAccountId, login: profile.username || profile.name || profile.providerAccountId, accessToken: profile.accessToken, refreshToken: profile.refreshToken || null, expiresAt: profile.expiresInSeconds ? new Date(Date.now() + profile.expiresInSeconds * 1_000) : null, scopes: profile.scopes || [], updatedAt: new Date() });
+          }
           const sessionToken = randomToken(32);
           await db.createSession({
             userId: user.id,
@@ -265,11 +271,14 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           });
           const secure = new URL(config.publicUrl).protocol === 'https:';
           const handoffToken = stateRecord.handoff ? randomToken(32) : null;
+          const githubGrantToken = stateRecord.purpose === 'github_authorization' && stateRecord.provider === 'github' ? randomToken(32) : null;
+          if (githubGrantToken) await db.createGithubGrant({ grantHash: hashToken(githubGrantToken), projectId: stateRecord.projectId, userId: user.id, expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000) });
           if (handoffToken) {
             await db.createHandoff({
               handoffHash: hashToken(handoffToken),
               projectId: stateRecord.projectId,
               userId: user.id,
+              githubGrantToken,
               expiresAt: new Date(Date.now() + 120_000),
             });
           }
@@ -296,7 +305,21 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           if (!handoff || handoff.expiresAt.getTime() <= Date.now() || handoff.projectId !== requestedProjectId) return jsonResponse({ error: 'invalid_handoff' }, 401, headers);
           const user = await db.getUser(handoff.userId);
           if (!user) return jsonResponse({ error: 'user_not_found' }, 401, headers);
-          return jsonResponse({ user }, 200, headers);
+          return jsonResponse({ user, ...(handoff.githubGrantToken ? { githubGrantToken: handoff.githubGrantToken } : {}) }, 200, headers);
+        }
+
+        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token') && request.method === 'GET') {
+          const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
+          if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
+          const grant = await db.getGithubGrant(hashToken(grantToken));
+          if (!grant || grant.projectId !== projectId || grant.expiresAt.getTime() <= Date.now()) return jsonResponse({ error: 'invalid_github_grant' }, 401, headers);
+          const connection = await db.getGithubConnection(grant.userId);
+          if (!connection || (connection.expiresAt && connection.expiresAt.getTime() <= Date.now())) return jsonResponse({ error: 'github_authorization_expired' }, 401, headers);
+          if (url.pathname === '/v1/github/clone-token') return jsonResponse({ accessToken: connection.accessToken }, 200, { ...headers, 'cache-control': 'no-store' });
+          const githubResponse = await fetch('https://api.github.com/user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=updated&direction=desc&per_page=100', { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+          if (!githubResponse.ok) return jsonResponse({ error: 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+          const repositories = await githubResponse.json();
+          return jsonResponse({ login: connection.login, repositories }, 200, headers);
         }
 
         if (url.pathname === '/v1/me' && request.method === 'GET') {

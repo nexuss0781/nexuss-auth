@@ -7,6 +7,8 @@ import type {
   HandoffRecord,
   OAuthProfile,
   OAuthStateRecord,
+  GithubConnectionRecord,
+  GithubGrantRecord,
   ProjectRecord,
   SessionRecord,
   UserRecord,
@@ -52,10 +54,28 @@ const schemaStatements = [
     provider TEXT NOT NULL CHECK (provider IN ('google', 'github')),
     redirect_uri TEXT NOT NULL,
     handoff INTEGER NOT NULL DEFAULT 0,
-    expires_at TEXT NOT NULL
+    expires_at TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT 'sign_in'
   )`,
   `CREATE TABLE IF NOT EXISTS oauth_handoffs (
     handoff_hash TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    github_grant_token TEXT,
+    expires_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS github_connections (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    github_account_id TEXT NOT NULL,
+    login TEXT NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    expires_at TEXT,
+    scopes TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS github_grants (
+    grant_hash TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at TEXT NOT NULL
@@ -82,10 +102,13 @@ const schemaStatements = [
   )`,
   'CREATE INDEX IF NOT EXISTS api_tokens_user_id_idx ON api_tokens(user_id)',
   'CREATE INDEX IF NOT EXISTS api_tokens_hash_idx ON api_tokens(token_hash)',
+  'CREATE INDEX IF NOT EXISTS github_grants_project_user_idx ON github_grants(project_id, user_id)',
 ];
 
 const projectMigrationStatements = [
   "ALTER TABLE oauth_states ADD COLUMN handoff INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE oauth_states ADD COLUMN purpose TEXT NOT NULL DEFAULT 'sign_in'",
+  "ALTER TABLE oauth_handoffs ADD COLUMN github_grant_token TEXT",
   "ALTER TABLE projects ADD COLUMN owner_user_id TEXT",
   "ALTER TABLE projects ADD COLUMN homepage_url TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT ''",
@@ -263,32 +286,63 @@ export class ParadoxDatabase implements Database {
 
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.run((db) => {
-      db.execute('INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, expires_at) VALUES (?, ?, ?, ?, ?, ?)', [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff ? 1 : 0, iso(state.expiresAt)]);
+      db.execute('INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, expires_at, purpose) VALUES (?, ?, ?, ?, ?, ?, ?)', [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff ? 1 : 0, iso(state.expiresAt), state.purpose ?? 'sign_in']);
     }, true);
   }
 
   async consumeOAuthState(stateHash: string): Promise<OAuthStateRecord | null> {
     return this.run((db) => {
-      const row = one<{ state_hash: string; project_id: string; provider: 'google' | 'github'; redirect_uri: string; handoff: number; expires_at: string }>(db, 'SELECT state_hash, project_id, provider, redirect_uri, handoff, expires_at FROM oauth_states WHERE state_hash = ?', [stateHash]);
+      const row = one<{ state_hash: string; project_id: string; provider: 'google' | 'github'; redirect_uri: string; handoff: number; expires_at: string; purpose: 'sign_in' | 'github_authorization' }>(db, 'SELECT state_hash, project_id, provider, redirect_uri, handoff, expires_at, purpose FROM oauth_states WHERE state_hash = ?', [stateHash]);
       if (!row) return null;
       db.execute('DELETE FROM oauth_states WHERE state_hash = ?', [stateHash]);
-      return { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff === 1, expiresAt: date(row.expires_at) };
+      return { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff === 1, purpose: row.purpose || 'sign_in', expiresAt: date(row.expires_at) };
     }, true);
   }
 
   async createHandoff(handoff: HandoffRecord): Promise<void> {
     await this.run((db) => {
-      db.execute('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, expires_at) VALUES (?, ?, ?, ?)', [handoff.handoffHash, handoff.projectId, handoff.userId, iso(handoff.expiresAt)]);
+      db.execute('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, github_grant_token, expires_at) VALUES (?, ?, ?, ?, ?)', [handoff.handoffHash, handoff.projectId, handoff.userId, handoff.githubGrantToken ?? null, iso(handoff.expiresAt)]);
     }, true);
   }
 
   async consumeHandoff(handoffHash: string): Promise<HandoffRecord | null> {
     return this.run((db) => {
-      const row = one<{ handoff_hash: string; project_id: string; user_id: string; expires_at: string }>(db, 'SELECT handoff_hash, project_id, user_id, expires_at FROM oauth_handoffs WHERE handoff_hash = ?', [handoffHash]);
+      const row = one<{ handoff_hash: string; project_id: string; user_id: string; github_grant_token: string | null; expires_at: string }>(db, 'SELECT handoff_hash, project_id, user_id, github_grant_token, expires_at FROM oauth_handoffs WHERE handoff_hash = ?', [handoffHash]);
       if (!row) return null;
       db.execute('DELETE FROM oauth_handoffs WHERE handoff_hash = ?', [handoffHash]);
-      return { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, expiresAt: date(row.expires_at) };
+      return { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, githubGrantToken: row.github_grant_token, expiresAt: date(row.expires_at) };
     }, true);
+  }
+
+  async saveGithubConnection(connection: GithubConnectionRecord): Promise<void> {
+    await this.run((db) => {
+      db.execute(`INSERT INTO github_connections (user_id, github_account_id, login, access_token, refresh_token, expires_at, scopes, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET github_account_id = excluded.github_account_id, login = excluded.login, access_token = excluded.access_token, refresh_token = excluded.refresh_token, expires_at = excluded.expires_at, scopes = excluded.scopes, updated_at = excluded.updated_at`, [connection.userId, connection.githubAccountId, connection.login, connection.accessToken, connection.refreshToken, connection.expiresAt ? iso(connection.expiresAt) : null, JSON.stringify(connection.scopes), iso(connection.updatedAt)]);
+    }, true);
+  }
+
+  async getGithubConnection(userId: string): Promise<GithubConnectionRecord | null> {
+    return this.run((db) => {
+      const row = one<{ user_id: string; github_account_id: string; login: string; access_token: string; refresh_token: string | null; expires_at: string | null; scopes: string; updated_at: string }>(db, 'SELECT user_id, github_account_id, login, access_token, refresh_token, expires_at, scopes, updated_at FROM github_connections WHERE user_id = ?', [userId]);
+      if (!row) return null;
+      let scopes: string[] = [];
+      try { const parsed = JSON.parse(row.scopes); if (Array.isArray(parsed)) scopes = parsed.filter((scope): scope is string => typeof scope === 'string'); } catch { /* Keep an empty scope list for a malformed legacy row. */ }
+      return { userId: row.user_id, githubAccountId: row.github_account_id, login: row.login, accessToken: row.access_token, refreshToken: row.refresh_token, expiresAt: row.expires_at ? date(row.expires_at) : null, scopes, updatedAt: date(row.updated_at) };
+    });
+  }
+
+  async createGithubGrant(grant: GithubGrantRecord): Promise<void> {
+    await this.run((db) => {
+      db.execute('INSERT INTO github_grants (grant_hash, project_id, user_id, expires_at) VALUES (?, ?, ?, ?)', [grant.grantHash, grant.projectId, grant.userId, iso(grant.expiresAt)]);
+    }, true);
+  }
+
+  async getGithubGrant(grantHash: string): Promise<GithubGrantRecord | null> {
+    return this.run((db) => {
+      const row = one<{ grant_hash: string; project_id: string; user_id: string; expires_at: string }>(db, 'SELECT grant_hash, project_id, user_id, expires_at FROM github_grants WHERE grant_hash = ?', [grantHash]);
+      return row ? { grantHash: row.grant_hash, projectId: row.project_id, userId: row.user_id, expiresAt: date(row.expires_at) } : null;
+    });
   }
 
   async findOrCreateUser(profile: OAuthProfile): Promise<UserRecord> {

@@ -2,6 +2,8 @@ import pg from 'pg';
 import type {
   ApiTokenRecord,
   CreateSessionInput,
+  GithubConnectionRecord,
+  GithubGrantRecord,
   Database,
   HandoffRecord,
   OAuthProfile,
@@ -99,9 +101,9 @@ export class PostgresDatabase implements Database {
 
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff, state.expiresAt],
+      `INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, expires_at, purpose)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff, state.expiresAt, state.purpose ?? 'sign_in'],
     );
   }
 
@@ -116,15 +118,16 @@ export class PostgresDatabase implements Database {
         redirect_uri: string;
         handoff: boolean;
         expires_at: Date;
+        purpose: 'sign_in' | 'github_authorization';
       }>(
         `DELETE FROM oauth_states WHERE state_hash = $1
-         RETURNING state_hash, project_id, provider, redirect_uri, handoff, expires_at`,
+         RETURNING state_hash, project_id, provider, redirect_uri, handoff, expires_at, purpose`,
         [stateHash],
       );
       await client.query('COMMIT');
       const row = result.rows[0];
       return row
-        ? { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff, expiresAt: row.expires_at }
+        ? { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff, purpose: row.purpose || 'sign_in', expiresAt: row.expires_at }
         : null;
     } catch (error) {
       await client.query('ROLLBACK');
@@ -136,8 +139,8 @@ export class PostgresDatabase implements Database {
 
   async createHandoff(handoff: HandoffRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, expires_at) VALUES ($1, $2, $3, $4)`,
-      [handoff.handoffHash, handoff.projectId, handoff.userId, handoff.expiresAt],
+      `INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, github_grant_token, expires_at) VALUES ($1, $2, $3, $4, $5)`,
+      [handoff.handoffHash, handoff.projectId, handoff.userId, handoff.githubGrantToken ?? null, handoff.expiresAt],
     );
   }
 
@@ -145,19 +148,42 @@ export class PostgresDatabase implements Database {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      const result = await client.query<{ handoff_hash: string; project_id: string; user_id: string; expires_at: Date }>(
-        `DELETE FROM oauth_handoffs WHERE handoff_hash = $1 RETURNING handoff_hash, project_id, user_id, expires_at`,
+            const result = await client.query<{ handoff_hash: string; project_id: string; user_id: string; github_grant_token: string | null; expires_at: Date }>(
+        `DELETE FROM oauth_handoffs WHERE handoff_hash = $1
+         RETURNING handoff_hash, project_id, user_id, github_grant_token, expires_at`,
         [handoffHash],
       );
       await client.query('COMMIT');
       const row = result.rows[0];
-      return row ? { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, expiresAt: row.expires_at } : null;
+      return row ? { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, githubGrantToken: row.github_grant_token, expiresAt: row.expires_at } : null;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
     } finally {
       client.release();
     }
+  }
+
+  async saveGithubConnection(connection: GithubConnectionRecord): Promise<void> {
+    await this.pool.query(`INSERT INTO github_connections (user_id, github_account_id, login, access_token, refresh_token, expires_at, scopes, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+      ON CONFLICT (user_id) DO UPDATE SET github_account_id = EXCLUDED.github_account_id, login = EXCLUDED.login, access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, expires_at = EXCLUDED.expires_at, scopes = EXCLUDED.scopes, updated_at = EXCLUDED.updated_at`, [connection.userId, connection.githubAccountId, connection.login, connection.accessToken, connection.refreshToken, connection.expiresAt, JSON.stringify(connection.scopes), connection.updatedAt]);
+  }
+
+  async getGithubConnection(userId: string): Promise<GithubConnectionRecord | null> {
+    const result = await this.pool.query<{ user_id: string; github_account_id: string; login: string; access_token: string; refresh_token: string | null; expires_at: Date | null; scopes: string[]; updated_at: Date }>('SELECT user_id, github_account_id, login, access_token, refresh_token, expires_at, scopes, updated_at FROM github_connections WHERE user_id = $1', [userId]);
+    const row = result.rows[0];
+    return row ? { userId: row.user_id, githubAccountId: row.github_account_id, login: row.login, accessToken: row.access_token, refreshToken: row.refresh_token, expiresAt: row.expires_at, scopes: row.scopes || [], updatedAt: row.updated_at } : null;
+  }
+
+  async createGithubGrant(grant: GithubGrantRecord): Promise<void> {
+    await this.pool.query('INSERT INTO github_grants (grant_hash, project_id, user_id, expires_at) VALUES ($1, $2, $3, $4)', [grant.grantHash, grant.projectId, grant.userId, grant.expiresAt]);
+  }
+
+  async getGithubGrant(grantHash: string): Promise<GithubGrantRecord | null> {
+    const result = await this.pool.query<{ grant_hash: string; project_id: string; user_id: string; expires_at: Date }>('SELECT grant_hash, project_id, user_id, expires_at FROM github_grants WHERE grant_hash = $1', [grantHash]);
+    const row = result.rows[0];
+    return row ? { grantHash: row.grant_hash, projectId: row.project_id, userId: row.user_id, expiresAt: row.expires_at } : null;
   }
 
   async findOrCreateUser(profile: OAuthProfile): Promise<UserRecord> {
