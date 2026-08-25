@@ -201,3 +201,10 @@
 - [x] Diagnose the deployed OAuth start failure as a database-schema migration gap in existing Postgres deployments.
 - [x] Apply OAuth-purpose, handoff-grant, GitHub connection, and GitHub grant migrations automatically during startup.
 - [x] Return a safe error code and support ID instead of an opaque `internal_error` for OAuth preparation failures.
+
+## Deployed OAuth State Persistence Repair
+
+- [x] Identify that Vercel uses the Paradox adapter, not the Postgres adapter.
+- [x] Prevent write operations from pulling the pre-migration remote snapshot after local schema migration.
+- [x] Apply legacy Paradox migrations before OAuth state inserts and preserve them through the write push.
+- [x] Validate the fix with the complete central-auth test and build suite.
