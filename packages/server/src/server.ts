@@ -329,7 +329,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           return jsonResponse({ user, ...(handoff.githubGrantToken ? { githubGrantToken: handoff.githubGrantToken } : {}) }, 200, headers);
         }
 
-        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token') && request.method === 'GET') {
+        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/file') && request.method === 'GET') {
           const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
           if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
           const grant = await db.getGithubGrant(hashToken(grantToken));
@@ -337,10 +337,38 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const connection = await db.getGithubConnection(grant.userId);
           if (!connection || (connection.expiresAt && connection.expiresAt.getTime() <= Date.now())) return jsonResponse({ error: 'github_authorization_expired' }, 401, headers);
           if (url.pathname === '/v1/github/clone-token') return jsonResponse({ accessToken: connection.accessToken }, 200, { ...headers, 'cache-control': 'no-store' });
-          const githubResponse = await fetch('https://api.github.com/user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=updated&direction=desc&per_page=100', { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
-          if (!githubResponse.ok) return jsonResponse({ error: 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
-          const repositories = await githubResponse.json();
-          return jsonResponse({ login: connection.login, repositories }, 200, headers);
+          if (url.pathname === '/v1/github/repositories') {
+            const githubResponse = await fetch('https://api.github.com/user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=updated&direction=desc&per_page=100', { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+            const repositories = await githubResponse.json();
+            return jsonResponse({ login: connection.login, repositories }, 200, headers);
+          }
+          const owner = url.searchParams.get('owner')?.trim() || '';
+          const repo = url.searchParams.get('repo')?.trim() || '';
+          const ref = url.searchParams.get('ref')?.trim() || '';
+          const path = url.searchParams.get('path')?.trim() || '';
+          if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || (ref && (ref.length > 200 || /[\u0000-\u001f]/.test(ref)))) return jsonResponse({ error: 'invalid_repository_reference' }, 400, headers);
+          if (url.pathname === '/v1/github/tree') {
+            const treeUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(ref || 'HEAD')}?recursive=1`;
+            const githubResponse = await fetch(treeUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'repository_tree_not_found' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+            const body = await githubResponse.json() as { sha?: string; truncated?: boolean; tree?: Array<{ path?: string; mode?: string; type?: string; sha?: string; size?: number; url?: string }> };
+            const tree = Array.isArray(body.tree) ? body.tree.slice(0, 5000).filter((entry) => typeof entry.path === 'string' && (entry.type === 'blob' || entry.type === 'tree')).map((entry) => ({ path: entry.path, type: entry.type, sha: entry.sha || '', size: typeof entry.size === 'number' ? entry.size : null })) : [];
+            return jsonResponse({ owner, repo, ref: ref || 'HEAD', sha: body.sha || null, truncated: Boolean(body.truncated) || (Array.isArray(body.tree) && body.tree.length > 5000), tree }, 200, headers);
+          }
+          if (!path || path.length > 500 || path.startsWith('/') || path.split('/').some((segment) => !segment || segment === '.' || segment === '..')) return jsonResponse({ error: 'invalid_file_path' }, 400, headers);
+          const fileUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref || 'HEAD')}`;
+          const githubResponse = await fetch(fileUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+          if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'file_not_found' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : 502, headers);
+          const body = await githubResponse.json() as { name?: string; path?: string; sha?: string; size?: number; encoding?: string; content?: string; type?: string; html_url?: string };
+          const size = typeof body.size === 'number' ? body.size : 0;
+          if (body.type !== 'file') return jsonResponse({ error: 'not_a_file' }, 400, headers);
+          if (size > 512_000) return jsonResponse({ error: 'file_too_large', size, maxBytes: 512_000 }, 413, headers);
+          if (body.encoding !== 'base64' || typeof body.content !== 'string') return jsonResponse({ error: 'unsupported_file_encoding' }, 400, headers);
+          const binary = atob(body.content.replace(/\s/g, ''));
+          const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+          const content = new TextDecoder().decode(bytes);
+          return jsonResponse({ owner, repo, ref: ref || 'HEAD', path: body.path || path, name: body.name || path.split('/').pop(), sha: body.sha || null, size, content, htmlUrl: body.html_url || null }, 200, headers);
         }
 
         if (url.pathname === '/v1/me' && request.method === 'GET') {
