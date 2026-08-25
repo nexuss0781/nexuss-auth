@@ -36,6 +36,7 @@ export interface OAuthStateRecord {
   redirectUri: string;
   handoff: boolean;
   purpose?: OAuthPurpose;
+  userId?: string | null;
   expiresAt: Date;
 }
 

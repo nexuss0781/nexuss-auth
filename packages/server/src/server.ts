@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { authorizationUrl, exchangeCode } from './providers.js';
 import { hashToken, jsonResponse, parseCookies, randomToken, serializeCookie, safeEqual } from './crypto.js';
 import { randomUUID } from 'node:crypto';
-import type { Database, OAuthPurpose, ProjectStatus, Provider, ProjectRecord, ServerConfig } from './types.js';
+import type { Database, OAuthPurpose, ProjectStatus, Provider, ProjectRecord, ServerConfig, UserRecord } from './types.js';
 
 const providers = new Set<Provider>(['google', 'github']);
 const MAX_BODY_BYTES = 16 * 1024;
@@ -235,6 +235,12 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           if (!redirectUri || !isAllowedRedirect(project, redirectUri)) return jsonResponse({ error: 'redirect_uri_not_allowed' }, 400, headers);
           const purpose: OAuthPurpose = url.searchParams.get('purpose') === 'github_authorization' ? 'github_authorization' : 'sign_in';
           if (purpose === 'github_authorization' && (provider !== 'github' || url.searchParams.get('handoff') !== '1')) return jsonResponse({ error: 'invalid_authorization_purpose' }, 400, headers);
+          let authorizationUserId: string | null = null;
+          if (purpose === 'github_authorization') {
+            const identity = await userIdentity(request, config, db);
+            if (!identity) return jsonResponse({ error: 'central_sign_in_required', message: 'Sign in to Nexuss Auth first so GitHub authorization stays attached to your existing profile.' }, 401, headers);
+            authorizationUserId = identity.userId;
+          }
           const state = randomToken(32);
           try {
             await db.createOAuthState({
@@ -244,6 +250,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
               redirectUri,
               handoff: url.searchParams.get('handoff') === '1',
               purpose,
+              userId: authorizationUserId,
               expiresAt: new Date(Date.now() + config.stateTtlSeconds * 1000),
             });
             return Response.redirect(authorizationUrl(config, provider, state, callbackUri(config), purpose), 302);
@@ -264,7 +271,15 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           if (oauthError || !code) return Response.redirect(redirectWith(stateRecord.redirectUri, 'nex_auth', 'denied'), 302);
           const profile = await exchangeCode(config, stateRecord.provider, code, callbackUri(config));
           if (!profile.providerAccountId) throw new Error('OAuth provider returned no account id');
-          const user = await db.findOrCreateUser(profile);
+          let user: UserRecord;
+          if (stateRecord.purpose === 'github_authorization') {
+            if (stateRecord.provider !== 'github' || !stateRecord.userId) throw new Error('GitHub authorization is not attached to an existing user');
+            const existingUser = await db.getUser(stateRecord.userId);
+            if (!existingUser) throw new Error('The existing Nexuss Auth profile could not be loaded');
+            user = existingUser;
+          } else {
+            user = await db.findOrCreateUser(profile);
+          }
           if (stateRecord.purpose === 'github_authorization' && stateRecord.provider === 'github' && profile.accessToken) {
             await db.saveGithubConnection({ userId: user.id, githubAccountId: profile.providerAccountId, login: profile.username || profile.name || profile.providerAccountId, accessToken: profile.accessToken, refreshToken: profile.refreshToken || null, expiresAt: profile.expiresInSeconds ? new Date(Date.now() + profile.expiresInSeconds * 1_000) : null, scopes: profile.scopes || [], updatedAt: new Date() });
           }

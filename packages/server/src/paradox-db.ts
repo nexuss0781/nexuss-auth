@@ -54,6 +54,7 @@ const schemaStatements = [
     provider TEXT NOT NULL CHECK (provider IN ('google', 'github')),
     redirect_uri TEXT NOT NULL,
     handoff INTEGER NOT NULL DEFAULT 0,
+    user_id TEXT,
     expires_at TEXT NOT NULL,
     purpose TEXT NOT NULL DEFAULT 'sign_in'
   )`,
@@ -108,6 +109,7 @@ const schemaStatements = [
 const projectMigrationStatements = [
   "ALTER TABLE oauth_states ADD COLUMN handoff INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE oauth_states ADD COLUMN purpose TEXT NOT NULL DEFAULT 'sign_in'",
+  "ALTER TABLE oauth_states ADD COLUMN user_id TEXT",
   "ALTER TABLE oauth_handoffs ADD COLUMN github_grant_token TEXT",
   "ALTER TABLE projects ADD COLUMN owner_user_id TEXT",
   "ALTER TABLE projects ADD COLUMN homepage_url TEXT NOT NULL DEFAULT ''",
@@ -290,16 +292,16 @@ export class ParadoxDatabase implements Database {
 
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.run((db) => {
-      db.execute('INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, expires_at, purpose) VALUES (?, ?, ?, ?, ?, ?, ?)', [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff ? 1 : 0, iso(state.expiresAt), state.purpose ?? 'sign_in']);
+      db.execute('INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff ? 1 : 0, state.userId ?? null, iso(state.expiresAt), state.purpose ?? 'sign_in']);
     }, true);
   }
 
   async consumeOAuthState(stateHash: string): Promise<OAuthStateRecord | null> {
     return this.run((db) => {
-      const row = one<{ state_hash: string; project_id: string; provider: 'google' | 'github'; redirect_uri: string; handoff: number; expires_at: string; purpose: 'sign_in' | 'github_authorization' }>(db, 'SELECT state_hash, project_id, provider, redirect_uri, handoff, expires_at, purpose FROM oauth_states WHERE state_hash = ?', [stateHash]);
+      const row = one<{ state_hash: string; project_id: string; provider: 'google' | 'github'; redirect_uri: string; handoff: number; user_id: string | null; expires_at: string; purpose: 'sign_in' | 'github_authorization' }>(db, 'SELECT state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose FROM oauth_states WHERE state_hash = ?', [stateHash]);
       if (!row) return null;
       db.execute('DELETE FROM oauth_states WHERE state_hash = ?', [stateHash]);
-      return { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff === 1, purpose: row.purpose || 'sign_in', expiresAt: date(row.expires_at) };
+      return { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff === 1, userId: row.user_id, purpose: row.purpose || 'sign_in', expiresAt: date(row.expires_at) };
     }, true);
   }
 

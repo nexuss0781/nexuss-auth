@@ -55,6 +55,7 @@ export class PostgresDatabase implements Database {
   async initialize(): Promise<void> {
     await this.pool.query(`
       ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'sign_in';
+      ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS user_id UUID;
       ALTER TABLE oauth_handoffs ADD COLUMN IF NOT EXISTS github_grant_token TEXT;
       CREATE TABLE IF NOT EXISTS github_connections (
         user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -125,9 +126,9 @@ export class PostgresDatabase implements Database {
 
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, expires_at, purpose)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff, state.expiresAt, state.purpose ?? 'sign_in'],
+      `INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff, state.userId ?? null, state.expiresAt, state.purpose ?? 'sign_in'],
     );
   }
 
@@ -141,17 +142,18 @@ export class PostgresDatabase implements Database {
         provider: 'google' | 'github';
         redirect_uri: string;
         handoff: boolean;
+        user_id: string | null;
         expires_at: Date;
         purpose: 'sign_in' | 'github_authorization';
       }>(
         `DELETE FROM oauth_states WHERE state_hash = $1
-         RETURNING state_hash, project_id, provider, redirect_uri, handoff, expires_at, purpose`,
+         RETURNING state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose`,
         [stateHash],
       );
       await client.query('COMMIT');
       const row = result.rows[0];
       return row
-        ? { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff, purpose: row.purpose || 'sign_in', expiresAt: row.expires_at }
+        ? { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff, userId: row.user_id, purpose: row.purpose || 'sign_in', expiresAt: row.expires_at }
         : null;
     } catch (error) {
       await client.query('ROLLBACK');

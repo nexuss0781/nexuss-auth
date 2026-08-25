@@ -208,3 +208,11 @@
 - [x] Prevent write operations from pulling the pre-migration remote snapshot after local schema migration.
 - [x] Apply legacy Paradox migrations before OAuth state inserts and preserve them through the write push.
 - [x] Validate the fix with the complete central-auth test and build suite.
+
+## Preserve Primary Profile During GitHub Authorization
+
+- [x] Require an existing central Nexuss Auth session before repository authorization.
+- [x] Bind GitHub authorization state to the existing user ID.
+- [x] Save the GitHub connection separately while retaining the original Google profile identity.
+- [x] Return the original profile in the application handoff rather than replacing it with GitHub profile data.
+- [x] Validate the central authentication suite and relying-app integration checks.

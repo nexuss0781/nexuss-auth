@@ -97,11 +97,14 @@ test('server provisions a project and creates a provider redirect with one-time 
 test('GitHub authorization requests repository scope and grant access stays project-scoped', async () => {
   const db = new MemoryDatabase();
   await db.upsertProject(demoProject);
+  db.users.set('google-user', { id: 'google-user', email: 'owner@example.com', name: 'Google Owner', avatarUrl: 'https://avatar.example.com/google.png' });
+  db.sessions.set(hashToken('central-session'), { tokenHash: hashToken('central-session'), userId: 'google-user', projectId: 'demo', expiresAt: new Date(Date.now() + 60_000) });
   const app = createAuthApp(config, db);
-  const start = await app.fetch(new Request('https://auth.example.com/oauth/start/github?project_id=demo&redirect_uri=https%3A%2F%2Fdemo.example.com%2Flogin&handoff=1&purpose=github_authorization'));
+  const start = await app.fetch(new Request('https://auth.example.com/oauth/start/github?project_id=demo&redirect_uri=https%3A%2F%2Fdemo.example.com%2Flogin&handoff=1&purpose=github_authorization', { headers: { cookie: 'nex_auth_session=central-session' } }));
   assert.equal(start.status, 302);
   assert.match(start.headers.get('location') ?? '', /scope=repo/);
   assert.equal(db.states.values().next().value?.purpose, 'github_authorization');
+  assert.equal(db.states.values().next().value?.userId, 'google-user');
   db.users.set('u1', { id: 'u1', email: 'ada@example.com', name: 'Ada', avatarUrl: null });
   db.githubConnections.set('u1', { userId: 'u1', githubAccountId: '42', login: 'ada', accessToken: 'github-secret-token', refreshToken: null, expiresAt: null, scopes: ['repo'], updatedAt: new Date() });
   db.githubGrants.set(hashToken('grant-token'), { grantHash: hashToken('grant-token'), projectId: 'demo', userId: 'u1', expiresAt: new Date(Date.now() + 60_000) });
