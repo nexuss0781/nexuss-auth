@@ -370,7 +370,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
             const body = await jsonBody(request);
             if (body.confirmed !== true) return jsonResponse({ error: 'delete_confirmation_required' }, 400, headers);
             const githubResponse = await fetch(repositoryUrl, { method: 'DELETE', headers: githubHeaders });
-            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'repository_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : 'github_repository_delete_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : 502, headers);
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'repository_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : githubResponse.status === 403 ? 'github_repository_delete_permission_denied' : 'github_repository_delete_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : githubResponse.status === 403 ? 403 : 502, headers);
             return jsonResponse({ deleted: true, fullName: owner + '/' + repo }, 200, headers);
           }
           const body = await jsonBody(request);
