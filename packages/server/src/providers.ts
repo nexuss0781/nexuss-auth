@@ -28,7 +28,7 @@ export function authorizationUrl(
   const url = new URL('https://github.com/login/oauth/authorize');
   url.searchParams.set('client_id', config.githubClientId);
   url.searchParams.set('redirect_uri', redirectUri);
-  url.searchParams.set('scope', purpose === 'github_authorization' ? 'repo' : 'read:user user:email');
+  url.searchParams.set('scope', purpose === 'github_authorization' ? 'repo delete_repo' : 'read:user user:email');
   url.searchParams.set('state', state);
   return url.toString();
 }
