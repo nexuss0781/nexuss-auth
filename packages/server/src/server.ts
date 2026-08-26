@@ -341,7 +341,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           return jsonResponse({ user, ...(handoff.githubGrantToken ? { githubGrantToken: handoff.githubGrantToken } : {}) }, 200, headers);
         }
 
-        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/branches' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/pull-files' || url.pathname === '/v1/github/search' || url.pathname === '/v1/github/runs' || url.pathname === '/v1/github/jobs' || url.pathname === '/v1/github/job-logs' || url.pathname === '/v1/github/pulls' || url.pathname === '/v1/github/analytics') && request.method === 'GET') {
+        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/branches' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/pull-files' || url.pathname === '/v1/github/search' || url.pathname === '/v1/github/runs' || url.pathname === '/v1/github/jobs' || url.pathname === '/v1/github/job-logs' || url.pathname === '/v1/github/pulls' || url.pathname === '/v1/github/analytics' || url.pathname === '/v1/github/file') && request.method === 'GET') {
           const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
           if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
           const grant = await db.getGithubGrant(hashToken(grantToken));
