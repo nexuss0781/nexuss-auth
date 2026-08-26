@@ -121,6 +121,26 @@ test('GitHub authorization requests repository scope and grant access stays proj
   }
 });
 
+test('GitHub branches stay project-scoped and return safe branch metadata', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject(demoProject);
+  db.users.set('u1', { id: 'u1', email: 'ada@example.com', name: 'Ada', avatarUrl: null });
+  db.githubConnections.set('u1', { userId: 'u1', githubAccountId: '42', login: 'ada', accessToken: 'github-secret-token', refreshToken: null, expiresAt: null, scopes: ['repo'], updatedAt: new Date() });
+  db.githubGrants.set(hashToken('grant-token'), { grantHash: hashToken('grant-token'), projectId: 'demo', userId: 'u1', expiresAt: new Date(Date.now() + 60_000) });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    assert.match(String(input), /repos\/ada\/private-repo\/branches/);
+    return new Response(JSON.stringify([{ name: 'main', protected: true }, { name: 'feature/search', protected: false }, { name: 'bad\u0000branch', protected: false }]), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const response = await createAuthApp(config, db).fetch(new Request('https://auth.example.com/v1/github/branches?project_id=demo&owner=ada&repo=private-repo', { headers: { authorization: 'Bearer grant-token' } }));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { owner: 'ada', repo: 'private-repo', branches: [{ name: 'main', protected: true }, { name: 'feature/search', protected: false }] });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('handoff exchange returns the project user once and rejects replay', async () => {
   const db = new MemoryDatabase();
   await db.upsertProject(demoProject);

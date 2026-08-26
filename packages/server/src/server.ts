@@ -341,7 +341,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           return jsonResponse({ user, ...(handoff.githubGrantToken ? { githubGrantToken: handoff.githubGrantToken } : {}) }, 200, headers);
         }
 
-        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/pull-files' || url.pathname === '/v1/github/search' || url.pathname === '/v1/github/runs' || url.pathname === '/v1/github/jobs' || url.pathname === '/v1/github/job-logs' || url.pathname === '/v1/github/pulls' || url.pathname === '/v1/github/analytics') && request.method === 'GET') {
+        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/branches' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/pull-files' || url.pathname === '/v1/github/search' || url.pathname === '/v1/github/runs' || url.pathname === '/v1/github/jobs' || url.pathname === '/v1/github/job-logs' || url.pathname === '/v1/github/pulls' || url.pathname === '/v1/github/analytics') && request.method === 'GET') {
           const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
           if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
           const grant = await db.getGithubGrant(hashToken(grantToken));
@@ -356,10 +356,19 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
             return jsonResponse({ login: connection.login, repositories }, 200, headers);
           }
           const owner = url.searchParams.get('owner')?.trim() || '';
+
           const repo = url.searchParams.get('repo')?.trim() || '';
           const ref = url.searchParams.get('ref')?.trim() || '';
           const path = url.searchParams.get('path')?.trim() || '';
           if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || (ref && (ref.length > 200 || /[\u0000-\u001f]/.test(ref)))) return jsonResponse({ error: 'invalid_repository_reference' }, 400, headers);
+          if (url.pathname === '/v1/github/branches') {
+            const branchesUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=100`;
+            const githubResponse = await fetch(branchesUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'repository_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : 502, headers);
+            const body = await githubResponse.json() as Array<{ name?: string; protected?: boolean }>;
+            const branches = Array.isArray(body) ? body.slice(0, 100).filter((branch) => typeof branch.name === 'string' && /^[^\u0000-\u001f]{1,200}$/.test(branch.name)).map((branch) => ({ name: branch.name as string, protected: Boolean(branch.protected) })) : [];
+            return jsonResponse({ owner, repo, branches }, 200, headers);
+          }
           if (url.pathname === '/v1/github/analytics') {
             const headersForGithub = { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' };
             const base = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
