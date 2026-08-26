@@ -225,7 +225,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
       if (request.method === 'OPTIONS') {
         return new Response(null, {
           status: 204,
-          headers: { ...headers, 'access-control-allow-methods': 'GET,POST,PATCH,OPTIONS', 'access-control-allow-headers': 'content-type,x-nex-auth-project,authorization', 'access-control-max-age': '86400' },
+          headers: { ...headers, 'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'access-control-allow-headers': 'content-type,x-nex-auth-project,authorization', 'access-control-max-age': '86400' },
         });
       }
 
@@ -339,6 +339,47 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const user = await db.getUser(handoff.userId);
           if (!user) return jsonResponse({ error: 'user_not_found' }, 401, headers);
           return jsonResponse({ user, ...(handoff.githubGrantToken ? { githubGrantToken: handoff.githubGrantToken } : {}) }, 200, headers);
+        }
+
+        if ((url.pathname === '/v1/github/repositories' && request.method === 'POST') || (url.pathname.startsWith('/v1/github/repositories/') && (request.method === 'PATCH' || request.method === 'DELETE'))) {
+          const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
+          if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
+          const grant = await db.getGithubGrant(hashToken(grantToken));
+          if (!grant || grant.projectId !== projectId || grant.expiresAt.getTime() <= Date.now()) return jsonResponse({ error: 'invalid_github_grant' }, 401, headers);
+          const connection = await db.getGithubConnection(grant.userId);
+          if (!connection || (connection.expiresAt && connection.expiresAt.getTime() <= Date.now())) return jsonResponse({ error: 'github_authorization_expired' }, 401, headers);
+          const githubHeaders = { accept: 'application/vnd.github+json', authorization: 'Bearer ' + connection.accessToken, 'X-GitHub-Api-Version': '2026-03-10', 'content-type': 'application/json', 'user-agent': 'Nexuss-Auth' };
+          if (request.method === 'POST') {
+            const body = await jsonBody(request);
+            const name = typeof body.name === 'string' ? body.name.trim() : '';
+            const description = typeof body.description === 'string' ? body.description.trim().slice(0, 500) : '';
+            const isPrivate = body.private === undefined ? true : body.private === true;
+            if (!/^[A-Za-z0-9_.-]{1,100}$/.test(name)) return jsonResponse({ error: 'invalid_repository_name' }, 400, headers);
+            const githubResponse = await fetch('https://api.github.com/user/repos', { method: 'POST', headers: githubHeaders, body: JSON.stringify({ name, description, private: isPrivate, auto_init: false }) });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 401 ? 'github_authorization_expired' : githubResponse.status === 422 ? 'repository_name_unavailable' : 'github_repository_create_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 422 ? 409 : 502, headers);
+            const result = await githubResponse.json();
+            return jsonResponse(result, 201, headers);
+          }
+          const segments = url.pathname.split('/').filter(Boolean);
+          const owner = segments[3] || '';
+          const repo = segments[4] || '';
+          if (segments.length !== 5 || !/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo)) return jsonResponse({ error: 'invalid_repository_reference' }, 400, headers);
+          if (!connection.login || owner.toLowerCase() !== connection.login.toLowerCase()) return jsonResponse({ error: 'repository_owner_required' }, 403, headers);
+          const repositoryUrl = 'https://api.github.com/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo);
+          if (request.method === 'DELETE') {
+            const body = await jsonBody(request);
+            if (body.confirmed !== true) return jsonResponse({ error: 'delete_confirmation_required' }, 400, headers);
+            const githubResponse = await fetch(repositoryUrl, { method: 'DELETE', headers: githubHeaders });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'repository_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : 'github_repository_delete_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : 502, headers);
+            return jsonResponse({ deleted: true, fullName: owner + '/' + repo }, 200, headers);
+          }
+          const body = await jsonBody(request);
+          const name = typeof body.name === 'string' ? body.name.trim() : '';
+          if (!/^[A-Za-z0-9_.-]{1,100}$/.test(name)) return jsonResponse({ error: 'invalid_repository_name' }, 400, headers);
+          const githubResponse = await fetch(repositoryUrl, { method: 'PATCH', headers: githubHeaders, body: JSON.stringify({ name }) });
+          if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 401 ? 'github_authorization_expired' : githubResponse.status === 404 ? 'repository_not_found' : githubResponse.status === 422 ? 'repository_name_unavailable' : 'github_repository_rename_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : githubResponse.status === 422 ? 409 : 502, headers);
+          const result = await githubResponse.json();
+          return jsonResponse(result, 200, headers);
         }
 
         if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/branches' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/pull-files' || url.pathname === '/v1/github/search' || url.pathname === '/v1/github/runs' || url.pathname === '/v1/github/jobs' || url.pathname === '/v1/github/job-logs' || url.pathname === '/v1/github/pulls' || url.pathname === '/v1/github/analytics' || url.pathname === '/v1/github/file') && request.method === 'GET') {
