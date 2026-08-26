@@ -312,3 +312,36 @@ test('an API token is restricted to its owner projects for list, inspect, create
   assert.equal(deleted.status, 404);
   assert.ok(await db.getProject('other'));
 });
+
+test('GitHub repository management is owner-scoped and requires delete confirmation', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject(demoProject);
+  db.users.set('u1', { id: 'u1', email: 'ada@example.com', name: 'Ada', avatarUrl: null });
+  db.githubConnections.set('u1', { userId: 'u1', githubAccountId: '42', login: 'ada', accessToken: 'github-secret-token', refreshToken: null, expiresAt: null, scopes: ['repo'], updatedAt: new Date() });
+  db.githubGrants.set(hashToken('grant-token'), { grantHash: hashToken('grant-token'), projectId: 'demo', userId: 'u1', expiresAt: new Date(Date.now() + 60_000) });
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ method: string; url: string; body: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ method: init?.method || 'GET', url: String(input), body: typeof init?.body === 'string' ? init.body : '' });
+    if (init?.method === 'POST') return new Response(JSON.stringify({ id: 8, name: 'new-repo', full_name: 'ada/new-repo', private: true, description: 'Created', html_url: 'https://github.com/ada/new-repo', default_branch: 'main' }), { status: 201, headers: { 'content-type': 'application/json' } });
+    if (init?.method === 'PATCH') return new Response(JSON.stringify({ id: 8, name: 'renamed-repo', full_name: 'ada/renamed-repo', private: true, description: 'Created', html_url: 'https://github.com/ada/renamed-repo', default_branch: 'main' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response(null, { status: 204 });
+  };
+  try {
+    const app = createAuthApp(config, db);
+    const create = await app.fetch(new Request('https://auth.example.com/v1/github/repositories?project_id=demo', { method: 'POST', headers: { authorization: 'Bearer grant-token', 'content-type': 'application/json' }, body: JSON.stringify({ name: 'new-repo', private: true }) }));
+    assert.equal(create.status, 201);
+    assert.equal((await create.json()).full_name, 'ada/new-repo');
+    const rename = await app.fetch(new Request('https://auth.example.com/v1/github/repositories/ada/new-repo?project_id=demo', { method: 'PATCH', headers: { authorization: 'Bearer grant-token', 'content-type': 'application/json' }, body: JSON.stringify({ name: 'renamed-repo' }) }));
+    assert.equal(rename.status, 200);
+    const missingConfirmation = await app.fetch(new Request('https://auth.example.com/v1/github/repositories/ada/renamed-repo?project_id=demo', { method: 'DELETE', headers: { authorization: 'Bearer grant-token', 'content-type': 'application/json' }, body: JSON.stringify({ confirmed: false }) }));
+    assert.equal(missingConfirmation.status, 400);
+    const remove = await app.fetch(new Request('https://auth.example.com/v1/github/repositories/ada/renamed-repo?project_id=demo', { method: 'DELETE', headers: { authorization: 'Bearer grant-token', 'content-type': 'application/json' }, body: JSON.stringify({ confirmed: true }) }));
+    assert.equal(remove.status, 200);
+    assert.deepEqual(await remove.json(), { deleted: true, fullName: 'ada/renamed-repo' });
+    assert.equal(calls.length, 3);
+    assert.ok(calls.every((call) => !call.body.includes('github-secret-token')));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
