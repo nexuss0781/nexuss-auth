@@ -366,7 +366,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
             const githubResponse = await fetch(branchesUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
             if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'repository_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : 502, headers);
             const body = await githubResponse.json() as Array<{ name?: string; protected?: boolean }>;
-            const branches = Array.isArray(body) ? body.slice(0, 100).filter((branch) => typeof branch.name === 'string' && /^[^\u0000-\u001f]{1,200}$/.test(branch.name)).map((branch) => ({ name: branch.name as string, protected: Boolean(branch.protected) })) : [];
+            const branches = Array.isArray(body) ? body.slice(0, 100).filter((branch) => typeof branch.name === 'string' && /^[A-Za-z0-9._/-]{1,200}$/.test(branch.name) && !branch.name.startsWith('/') && !branch.name.endsWith('/') && !branch.name.includes('..') && !branch.name.includes('@{')).map((branch) => ({ name: branch.name as string, protected: Boolean(branch.protected) })) : [];
             return jsonResponse({ owner, repo, branches }, 200, headers);
           }
           if (url.pathname === '/v1/github/analytics') {
