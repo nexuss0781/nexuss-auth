@@ -382,7 +382,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           return jsonResponse(result, 200, headers);
         }
 
-        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/branches' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/pull-files' || url.pathname === '/v1/github/search' || url.pathname === '/v1/github/runs' || url.pathname === '/v1/github/jobs' || url.pathname === '/v1/github/job-logs' || url.pathname === '/v1/github/pulls' || url.pathname === '/v1/github/analytics' || url.pathname === '/v1/github/file') && request.method === 'GET') {
+        if ((url.pathname === '/v1/github/repositories' || url.pathname === '/v1/github/clone-token' || url.pathname === '/v1/github/branches' || url.pathname === '/v1/github/tree' || url.pathname === '/v1/github/pull-files' || url.pathname === '/v1/github/search' || url.pathname === '/v1/github/runs' || url.pathname === '/v1/github/run' || url.pathname === '/v1/github/jobs' || url.pathname === '/v1/github/job-logs' || url.pathname === '/v1/github/workflows' || url.pathname === '/v1/github/artifacts' || url.pathname === '/v1/github/pulls' || url.pathname === '/v1/github/analytics' || url.pathname === '/v1/github/file') && request.method === 'GET') {
           const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
           if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
           const grant = await db.getGithubGrant(hashToken(grantToken));
@@ -422,6 +422,31 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
             const runs = Array.isArray((runsBody as { workflow_runs?: unknown[] }).workflow_runs) ? ((runsBody as { workflow_runs: Array<{ conclusion?: string | null; status?: string }> }).workflow_runs).slice(0, 30) : [];
             const successfulRuns = runs.filter((run) => run.conclusion === 'success').length; const completedRuns = runs.filter((run) => run.status === 'completed').length;
             return jsonResponse({ owner, repo, repository: { stars: typeof (repositoryBody as { stargazers_count?: number }).stargazers_count === 'number' ? (repositoryBody as { stargazers_count: number }).stargazers_count : 0, forks: typeof (repositoryBody as { forks_count?: number }).forks_count === 'number' ? (repositoryBody as { forks_count: number }).forks_count : 0, openIssues: typeof (repositoryBody as { open_issues_count?: number }).open_issues_count === 'number' ? (repositoryBody as { open_issues_count: number }).open_issues_count : 0, language: (repositoryBody as { language?: string | null }).language || null, pushedAt: (repositoryBody as { pushed_at?: string | null }).pushed_at || null }, commits, pulls, contributors, workflow: { total: runs.length, successful: successfulRuns, completed: completedRuns, successRate: completedRuns ? Math.round((successfulRuns / completedRuns) * 100) : null } }, 200, headers);
+          }
+          if (url.pathname === '/v1/github/workflows') {
+            const workflowsUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows?per_page=100`;
+            const githubResponse = await fetch(workflowsUrl, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'repository_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : 502, headers);
+            const body = await githubResponse.json() as { workflows?: Array<{ id?: number; name?: string; path?: string; state?: string; html_url?: string; updated_at?: string }> };
+            const workflows = Array.isArray(body.workflows) ? body.workflows.slice(0, 100).filter((workflow) => typeof workflow.id === 'number' && typeof workflow.path === 'string').map((workflow) => ({ id: workflow.id, name: workflow.name || workflow.path, path: workflow.path, state: workflow.state || 'active', htmlUrl: workflow.html_url || null, updatedAt: workflow.updated_at || null })) : [];
+            return jsonResponse({ owner, repo, workflows }, 200, headers);
+          }
+          if (url.pathname === '/v1/github/run') {
+            const runId = Number(url.searchParams.get('run_id') || '0');
+            if (!Number.isInteger(runId) || runId < 1) return jsonResponse({ error: 'invalid_run_id' }, 400, headers);
+            const githubResponse = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}`, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'run_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : 502, headers);
+            const run = await githubResponse.json();
+            return jsonResponse({ owner, repo, run }, 200, headers);
+          }
+          if (url.pathname === '/v1/github/artifacts') {
+            const runId = Number(url.searchParams.get('run_id') || '0');
+            if (!Number.isInteger(runId) || runId < 1) return jsonResponse({ error: 'invalid_run_id' }, 400, headers);
+            const githubResponse = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/artifacts?per_page=100`, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+            if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'run_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : 'github_api_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : 502, headers);
+            const body = await githubResponse.json() as { artifacts?: Array<{ id?: number; name?: string; size_in_bytes?: number; archive_download_url?: string; expired?: boolean; created_at?: string | null; expires_at?: string | null; digest?: string | null }> };
+            const artifacts = Array.isArray(body.artifacts) ? body.artifacts.slice(0, 100).filter((artifact) => typeof artifact.id === 'number').map((artifact) => ({ id: artifact.id, name: artifact.name || `artifact-${artifact.id}`, sizeBytes: artifact.size_in_bytes || 0, archiveDownloadUrl: artifact.archive_download_url || null, expired: Boolean(artifact.expired), createdAt: artifact.created_at || null, expiresAt: artifact.expires_at || null, digest: artifact.digest || null })) : [];
+            return jsonResponse({ owner, repo, runId, artifacts }, 200, headers);
           }
           if (url.pathname === '/v1/github/runs') {
             const runsUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs?per_page=30`;
@@ -500,6 +525,43 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
           const content = new TextDecoder().decode(bytes);
           return jsonResponse({ owner, repo, ref: ref || 'HEAD', path: body.path || path, name: body.name || path.split('/').pop(), sha: body.sha || null, size, content, htmlUrl: body.html_url || null }, 200, headers);
+        }
+
+        if (url.pathname === '/v1/github/dispatch' && request.method === 'POST') {
+          const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
+          if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
+          const grant = await db.getGithubGrant(hashToken(grantToken));
+          if (!grant || grant.projectId !== projectId || grant.expiresAt.getTime() <= Date.now()) return jsonResponse({ error: 'invalid_github_grant' }, 401, headers);
+          const connection = await db.getGithubConnection(grant.userId);
+          if (!connection || (connection.expiresAt && connection.expiresAt.getTime() <= Date.now())) return jsonResponse({ error: 'github_authorization_expired' }, 401, headers);
+          const body = await jsonBody(request);
+          const owner = typeof body.owner === 'string' ? body.owner.trim() : '';
+          const repo = typeof body.repo === 'string' ? body.repo.trim() : '';
+          const workflowId = typeof body.workflowId === 'string' ? body.workflowId.trim() : '';
+          const ref = typeof body.ref === 'string' ? body.ref.trim() : '';
+          const inputs = body.inputs && typeof body.inputs === 'object' && !Array.isArray(body.inputs) ? body.inputs as Record<string, unknown> : {};
+          if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || !/^((\d+)|[A-Za-z0-9._\/-]+\.ya?ml)$/.test(workflowId) || !/^[^\u0000-\u001f]{1,256}$/.test(ref) || Object.keys(inputs).length > 25 || Object.entries(inputs).some(([key, value]) => !/^[A-Za-z0-9_\-]{1,100}$/.test(key) || typeof value !== 'string' || value.length > 20_000)) return jsonResponse({ error: 'invalid_workflow_dispatch' }, 400, headers);
+          const githubResponse = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${encodeURIComponent(workflowId)}/dispatches`, { method: 'POST', headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'content-type': 'application/json', 'user-agent': 'Nexuss-Auth' }, body: JSON.stringify({ ref, inputs }) });
+          if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'workflow_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : githubResponse.status === 403 ? 'workflow_dispatch_forbidden' : 'workflow_dispatch_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : githubResponse.status === 403 ? 403 : 502, headers);
+          const result = await githubResponse.json().catch(() => ({}));
+          return jsonResponse({ owner, repo, workflowId, ref, ...(result.workflow_run_id ? { workflowRunId: result.workflow_run_id } : {}), ...(result.run_url ? { runUrl: result.run_url } : {}), ...(result.html_url ? { htmlUrl: result.html_url } : {}) }, 200, headers);
+        }
+
+        if (url.pathname === '/v1/github/cancel' && request.method === 'POST') {
+          const grantToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
+          if (!grantToken || !projectId) return jsonResponse({ error: 'github_grant_required' }, 401, headers);
+          const grant = await db.getGithubGrant(hashToken(grantToken));
+          if (!grant || grant.projectId !== projectId || grant.expiresAt.getTime() <= Date.now()) return jsonResponse({ error: 'invalid_github_grant' }, 401, headers);
+          const connection = await db.getGithubConnection(grant.userId);
+          if (!connection || (connection.expiresAt && connection.expiresAt.getTime() <= Date.now())) return jsonResponse({ error: 'github_authorization_expired' }, 401, headers);
+          const body = await jsonBody(request);
+          const owner = typeof body.owner === 'string' ? body.owner.trim() : '';
+          const repo = typeof body.repo === 'string' ? body.repo.trim() : '';
+          const runId = Number(body.runId);
+          if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || !Number.isInteger(runId) || runId < 1) return jsonResponse({ error: 'invalid_run_reference' }, 400, headers);
+          const githubResponse = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/cancel`, { method: 'POST', headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${connection.accessToken}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'Nexuss-Auth' } });
+          if (!githubResponse.ok) return jsonResponse({ error: githubResponse.status === 404 ? 'run_not_found' : githubResponse.status === 401 ? 'github_authorization_expired' : githubResponse.status === 409 ? 'run_not_cancellable' : 'workflow_cancel_failed' }, githubResponse.status === 401 ? 401 : githubResponse.status === 404 ? 404 : githubResponse.status === 409 ? 409 : 502, headers);
+          return jsonResponse({ cancelled: true, owner, repo, runId }, 202, headers);
         }
 
         if (url.pathname === '/v1/github/comment' && request.method === 'POST') {

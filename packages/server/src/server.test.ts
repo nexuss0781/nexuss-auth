@@ -141,6 +141,41 @@ test('GitHub branches stay project-scoped and return safe branch metadata', asyn
   }
 });
 
+test('GitHub Actions proxy dispatches, reads, cancels, and lists artifacts for a scoped grant', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject(demoProject);
+  db.users.set('u1', { id: 'u1', email: 'ada@example.com', name: 'Ada', avatarUrl: null });
+  db.githubConnections.set('u1', { userId: 'u1', githubAccountId: '42', login: 'ada', accessToken: 'github-secret-token', refreshToken: null, expiresAt: null, scopes: ['repo', 'workflow'], updatedAt: new Date() });
+  db.githubGrants.set(hashToken('grant-token'), { grantHash: hashToken('grant-token'), projectId: 'demo', userId: 'u1', expiresAt: new Date(Date.now() + 60_000) });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    assert.equal((init?.headers as Record<string, string> | undefined)?.authorization, 'Bearer github-secret-token');
+    if (url.endsWith('/actions/workflows?per_page=100')) return new Response(JSON.stringify({ workflows: [{ id: 7, name: 'Build', path: '.github/workflows/build.yml', state: 'active', html_url: 'https://github.com/ada/private-repo/actions/workflows/build.yml' }] }), { status: 200 });
+    if (url.endsWith('/dispatches')) return new Response(JSON.stringify({ workflow_run_id: 900, run_url: 'https://api.github.com/repos/ada/private-repo/actions/runs/900', html_url: 'https://github.com/ada/private-repo/actions/runs/900' }), { status: 200 });
+    if (url.endsWith('/actions/runs/900/artifacts?per_page=100')) return new Response(JSON.stringify({ artifacts: [{ id: 55, name: 'build.zip', size_in_bytes: 123, archive_download_url: 'https://api.github.com/artifacts/55' }] }), { status: 200 });
+    if (url.endsWith('/actions/runs/900/cancel')) return new Response(null, { status: 202 });
+    if (url.endsWith('/actions/runs/900')) return new Response(JSON.stringify({ id: 900, status: 'completed', conclusion: 'success' }), { status: 200 });
+    throw new Error(`Unexpected GitHub URL: ${url}`);
+  };
+  try {
+    const app = createAuthApp(config, db);
+    const headers = { authorization: 'Bearer grant-token', 'content-type': 'application/json' };
+    const workflows = await app.fetch(new Request('https://auth.example.com/v1/github/workflows?project_id=demo&owner=ada&repo=private-repo', { headers }));
+    assert.deepEqual((await workflows.json()).workflows[0].path, '.github/workflows/build.yml');
+    const dispatch = await app.fetch(new Request('https://auth.example.com/v1/github/dispatch?project_id=demo', { method: 'POST', headers, body: JSON.stringify({ owner: 'ada', repo: 'private-repo', workflowId: '7', ref: 'main', inputs: { mode: 'release' } }) }));
+    assert.equal((await dispatch.json()).workflowRunId, 900);
+    const run = await app.fetch(new Request('https://auth.example.com/v1/github/run?project_id=demo&owner=ada&repo=private-repo&run_id=900', { headers }));
+    assert.equal((await run.json()).run.conclusion, 'success');
+    const artifacts = await app.fetch(new Request('https://auth.example.com/v1/github/artifacts?project_id=demo&owner=ada&repo=private-repo&run_id=900', { headers }));
+    assert.equal((await artifacts.json()).artifacts[0].name, 'build.zip');
+    const cancelled = await app.fetch(new Request('https://auth.example.com/v1/github/cancel?project_id=demo', { method: 'POST', headers, body: JSON.stringify({ owner: 'ada', repo: 'private-repo', runId: 900 }) }));
+    assert.equal(cancelled.status, 202);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('handoff exchange returns the project user once and rejects replay', async () => {
   const db = new MemoryDatabase();
   await db.upsertProject(demoProject);
