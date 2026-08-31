@@ -29,7 +29,7 @@ export default function Tokens() {
     try { await revokeApiToken(tokenId); setTokens((current) => current.filter((token) => token.tokenId !== tokenId)); toast.success("Token revoked."); } catch { toast.error("Unable to revoke token."); }
   };
 
-  return <main className="min-h-screen bg-[#050505] px-5 py-8 text-white sm:px-10 lg:px-14">
+  return <main className="auth-tokens-page min-h-screen bg-[#050505] px-5 py-8 text-white sm:px-10 lg:px-14">
     <div className="mx-auto max-w-5xl">
       <header className="flex items-center justify-between border-b border-white/10 pb-6">
         <div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-xl border border-white/15 bg-white text-black"><KeyRound className="size-5" /></div><div><p className="text-sm font-bold tracking-[-0.04em]">API tokens</p><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-white/40">Account access</p></div></div>
