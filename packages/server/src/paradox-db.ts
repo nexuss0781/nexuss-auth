@@ -5,6 +5,8 @@ import type {
   CreateSessionInput,
   Database,
   HandoffRecord,
+  OAuthFinalizationInput,
+  OAuthFinalizationResult,
   OAuthProfile,
   OAuthStateRecord,
   GithubConnectionRecord,
@@ -259,6 +261,28 @@ export class ParadoxDatabase implements Database {
     }
   }
 
+  private async runBatch<T>(work: (db: ParadConnection) => T): Promise<T> {
+    let release!: () => void;
+    const previous = this.lock;
+    this.lock = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      const db = await this.open(true);
+      db.execute('BEGIN');
+      try {
+        const result = work(db);
+        db.execute('COMMIT');
+        await db.push();
+        return result;
+      } catch (error) {
+        try { db.execute('ROLLBACK'); } catch { /* Preserve the original failure. */ }
+        throw error;
+      }
+    } finally {
+      release();
+    }
+  }
+
   async listProjects(ownerUserId?: string): Promise<ProjectRecord[]> {
     return this.run((db) => rows<ProjectRow>(db, ownerUserId
       ? 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE owner_user_id = ? ORDER BY created_at DESC, project_id ASC'
@@ -326,6 +350,22 @@ export class ParadoxDatabase implements Database {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET github_account_id = excluded.github_account_id, login = excluded.login, access_token = excluded.access_token, refresh_token = excluded.refresh_token, expires_at = excluded.expires_at, scopes = excluded.scopes, updated_at = excluded.updated_at`, [connection.userId, connection.githubAccountId, connection.login, connection.accessToken, connection.refreshToken, connection.expiresAt ? iso(connection.expiresAt) : null, JSON.stringify(connection.scopes), iso(connection.updatedAt)]);
     }, true);
+  }
+
+  async finalizeOAuthAuthorization(input: OAuthFinalizationInput): Promise<OAuthFinalizationResult> {
+    return this.runBatch((db) => {
+      const row = one<{ id: string; email: string | null; name: string | null; avatar_url: string | null }>(db, 'SELECT id, email, name, avatar_url FROM users WHERE id = ?', [input.state.userId]);
+      if (!row) throw new Error('OAuth user disappeared before finalization');
+      if (input.profile.provider === 'github' && input.profile.accessToken) {
+        db.execute(`INSERT INTO github_connections (user_id, github_account_id, login, access_token, refresh_token, expires_at, scopes, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(user_id) DO UPDATE SET github_account_id = excluded.github_account_id, login = excluded.login, access_token = excluded.access_token, refresh_token = excluded.refresh_token, expires_at = excluded.expires_at, scopes = excluded.scopes, updated_at = excluded.updated_at`, [row.id, input.profile.providerAccountId, input.profile.username || input.profile.name || input.profile.providerAccountId, input.profile.accessToken, input.profile.refreshToken ?? null, input.profile.expiresInSeconds ? iso(new Date(Date.now() + input.profile.expiresInSeconds * 1_000)) : null, JSON.stringify(input.profile.scopes || []), iso(new Date())]);
+      }
+      db.execute('INSERT INTO sessions (token_hash, user_id, project_id, expires_at) VALUES (?, ?, ?, ?)', [input.sessionTokenHash, row.id, input.state.projectId, iso(input.sessionExpiresAt)]);
+      if (input.githubGrantHash && input.githubGrantExpiresAt) db.execute('INSERT INTO github_grants (grant_hash, project_id, user_id, expires_at) VALUES (?, ?, ?, ?)', [input.githubGrantHash, input.state.projectId, row.id, iso(input.githubGrantExpiresAt)]);
+      if (input.handoffHash && input.handoffExpiresAt) db.execute('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, github_grant_token, expires_at) VALUES (?, ?, ?, ?, ?)', [input.handoffHash, input.state.projectId, row.id, input.githubGrantToken ?? null, iso(input.handoffExpiresAt)]);
+      return { user: { id: row.id, email: row.email, name: row.name, avatarUrl: row.avatar_url } };
+    });
   }
 
   async getGithubConnection(userId: string): Promise<GithubConnectionRecord | null> {

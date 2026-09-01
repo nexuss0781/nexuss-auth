@@ -33,8 +33,16 @@ export function authorizationUrl(
   return url.toString();
 }
 
-async function fetchJson(url: string, init?: RequestInit): Promise<Record<string, unknown>> {
-  const response = await fetch(url, init);
+async function fetchJson(url: string, timeoutMs: number, init: RequestInit = {}): Promise<Record<string, unknown>> {
+  let response: Response;
+  try {
+    response = await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(timeoutMs) });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      throw new Error(`OAuth provider request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
   const payload = (await response.json()) as unknown;
   if (!response.ok || typeof payload !== 'object' || payload === null) {
     throw new Error(`OAuth provider request failed with status ${response.status}`);
@@ -58,7 +66,7 @@ export async function exchangeCode(
 ): Promise<OAuthProfile> {
   const credentials = providerClient(config, provider);
   if (provider === 'google') {
-    const tokenPayload = await fetchJson('https://oauth2.googleapis.com/token', {
+    const tokenPayload = await fetchJson('https://oauth2.googleapis.com/token', config.oauthRequestTimeoutMs, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -71,7 +79,7 @@ export async function exchangeCode(
     });
     const accessToken = stringOrNull(tokenPayload.access_token);
     if (!accessToken) throw new Error('Google did not return an access token');
-    const profile = await fetchJson('https://openidconnect.googleapis.com/v1/userinfo', {
+    const profile = await fetchJson('https://openidconnect.googleapis.com/v1/userinfo', config.oauthRequestTimeoutMs, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
     const email = stringOrNull(profile.email);
@@ -86,7 +94,7 @@ export async function exchangeCode(
     };
   }
 
-  const tokenPayload = await fetchJson('https://github.com/login/oauth/access_token', {
+  const tokenPayload = await fetchJson('https://github.com/login/oauth/access_token', config.oauthRequestTimeoutMs, {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -99,11 +107,11 @@ export async function exchangeCode(
   const accessToken = stringOrNull(tokenPayload.access_token);
   if (!accessToken) throw new Error('GitHub did not return an access token');
   const headers = { authorization: `Bearer ${accessToken}`, accept: 'application/vnd.github+json' };
-  const profile = await fetchJson('https://api.github.com/user', { headers });
+  const profile = await fetchJson('https://api.github.com/user', config.oauthRequestTimeoutMs, { headers });
   let email = stringOrNull(profile.email);
   let emailVerified = false;
   if (!email) {
-    const emailsResponse = await fetch('https://api.github.com/user/emails', { headers });
+    const emailsResponse = await fetch('https://api.github.com/user/emails', { headers, signal: AbortSignal.timeout(config.oauthRequestTimeoutMs) });
     if (emailsResponse.ok) {
       const emails = (await emailsResponse.json()) as unknown;
       if (Array.isArray(emails)) {

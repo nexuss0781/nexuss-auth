@@ -14,6 +14,7 @@ export interface ServerConfig {
   googleClientSecret: string;
   githubClientId: string;
   githubClientSecret: string;
+  oauthRequestTimeoutMs: number;
 }
 
 export interface ProjectRecord {
@@ -112,6 +113,22 @@ export interface GithubConnectionRecord {
   updatedAt: Date;
 }
 
+export interface OAuthFinalizationInput {
+  state: OAuthStateRecord;
+  profile: OAuthProfile;
+  sessionTokenHash: string;
+  sessionExpiresAt: Date;
+  githubGrantHash?: string | null;
+  githubGrantToken?: string | null;
+  githubGrantExpiresAt?: Date | null;
+  handoffHash?: string | null;
+  handoffExpiresAt?: Date | null;
+}
+
+export interface OAuthFinalizationResult {
+  user: UserRecord;
+}
+
 export interface Database {
   close(): Promise<void>;
   listProjects(ownerUserId?: string): Promise<ProjectRecord[]>;
@@ -136,4 +153,5 @@ export interface Database {
   getApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null>;
   touchApiToken(tokenId: string): Promise<void>;
   revokeApiToken(userId: string, tokenId: string): Promise<boolean>;
+  finalizeOAuthAuthorization?(input: OAuthFinalizationInput): Promise<OAuthFinalizationResult>;
 }

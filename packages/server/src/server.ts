@@ -181,7 +181,7 @@ async function managementIdentity(request: Request, config: ServerConfig, db: Da
   if (session) return { kind: 'user', userId: session.userId };
   const apiToken = await db.getApiTokenByHash(hashToken(bearer));
   if (!apiToken) return null;
-  await db.touchApiToken(apiToken.tokenId);
+  void db.touchApiToken(apiToken.tokenId).catch((error) => console.error('Nexuss Auth API token usage update failed', { tokenId: apiToken.tokenId, error }));
   return { kind: 'token', userId: apiToken.userId, tokenId: apiToken.tokenId };
 }
 
@@ -206,14 +206,19 @@ function systemDashboardProject(config: ServerConfig): ProjectRecord {
 }
 
 export function createAuthApp(config: ServerConfig, db: Database): { fetch(request: Request): Promise<Response> } {
+  let dashboardProvisioning: Promise<void> | null = null;
   return {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
       const projectId = request.headers.get('x-nex-auth-project') || url.searchParams.get('project_id');
-      let project = projectId ? await db.getProject(projectId) : null;
+      let project = projectId === 'nexuss-dashboard' ? null : projectId ? await db.getProject(projectId) : null;
       if (projectId === 'nexuss-dashboard') {
         // Keep the control-plane project aligned with the canonical deployment URL.
-        project = await db.upsertProject(systemDashboardProject(config));
+        if (!dashboardProvisioning) {
+          dashboardProvisioning = db.upsertProject(systemDashboardProject(config)).then(() => undefined);
+        }
+        await dashboardProvisioning;
+        project = await db.getProject(projectId);
       }
       const headers = {
         ...corsHeaders(request.headers.get('origin'), project),
@@ -274,6 +279,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
         }
 
         if (url.pathname === '/oauth/callback' && request.method === 'GET') {
+          const callbackStartedAt = Date.now();
           const state = url.searchParams.get('state');
           const code = url.searchParams.get('code');
           const oauthError = url.searchParams.get('error');
@@ -292,33 +298,46 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           } else {
             user = await db.findOrCreateUser(profile);
           }
-          if (stateRecord.purpose === 'github_authorization' && stateRecord.provider === 'github' && profile.accessToken) {
-            await db.saveGithubConnection({ userId: user.id, githubAccountId: profile.providerAccountId, login: profile.username || profile.name || profile.providerAccountId, accessToken: profile.accessToken, refreshToken: profile.refreshToken || null, expiresAt: profile.expiresInSeconds ? new Date(Date.now() + profile.expiresInSeconds * 1_000) : null, scopes: profile.scopes || [], updatedAt: new Date() });
-          }
           const sessionToken = randomToken(32);
-          await db.createSession({
-            userId: user.id,
-            projectId: stateRecord.projectId,
-            tokenHash: hashToken(sessionToken),
-            expiresAt: new Date(Date.now() + config.sessionTtlSeconds * 1000),
-          });
           const secure = new URL(config.publicUrl).protocol === 'https:';
           const handoffToken = stateRecord.handoff ? randomToken(32) : null;
           const githubGrantToken = stateRecord.purpose === 'github_authorization' && stateRecord.provider === 'github' ? randomToken(32) : null;
-          if (githubGrantToken) await db.createGithubGrant({ grantHash: hashToken(githubGrantToken), projectId: stateRecord.projectId, userId: user.id, expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000) });
-          if (handoffToken) {
+          const sessionExpiresAt = new Date(Date.now() + config.sessionTtlSeconds * 1000);
+          const githubGrantExpiresAt = githubGrantToken ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000) : null;
+          const handoffExpiresAt = handoffToken ? new Date(Date.now() + 120_000) : null;
+          if (stateRecord.purpose === 'github_authorization' && db.finalizeOAuthAuthorization) {
+            await db.finalizeOAuthAuthorization({
+              state: stateRecord,
+              profile,
+              sessionTokenHash: hashToken(sessionToken),
+              sessionExpiresAt,
+              githubGrantHash: githubGrantToken ? hashToken(githubGrantToken) : null,
+              githubGrantToken,
+              githubGrantExpiresAt,
+              handoffHash: handoffToken ? hashToken(handoffToken) : null,
+              handoffExpiresAt,
+            });
+          } else {
+            if (stateRecord.purpose === 'github_authorization' && stateRecord.provider === 'github' && profile.accessToken) {
+              await db.saveGithubConnection({ userId: user.id, githubAccountId: profile.providerAccountId, login: profile.username || profile.name || profile.providerAccountId, accessToken: profile.accessToken, refreshToken: profile.refreshToken || null, expiresAt: profile.expiresInSeconds ? new Date(Date.now() + profile.expiresInSeconds * 1_000) : null, scopes: profile.scopes || [], updatedAt: new Date() });
+            }
+            await db.createSession({ userId: user.id, projectId: stateRecord.projectId, tokenHash: hashToken(sessionToken), expiresAt: sessionExpiresAt });
+            if (githubGrantToken) await db.createGithubGrant({ grantHash: hashToken(githubGrantToken), projectId: stateRecord.projectId, userId: user.id, expiresAt: githubGrantExpiresAt! });
+            if (handoffToken) {
             await db.createHandoff({
               handoffHash: hashToken(handoffToken),
               projectId: stateRecord.projectId,
               userId: user.id,
               githubGrantToken,
-              expiresAt: new Date(Date.now() + 120_000),
+              expiresAt: handoffExpiresAt!,
             });
+            }
           }
           let destination = isLoopbackRedirect(stateRecord.redirectUri)
             ? redirectWith(redirectWith(stateRecord.redirectUri, 'nex_auth', 'success'), 'session_token', sessionToken)
             : redirectWith(stateRecord.redirectUri, 'nex_auth', 'success');
           if (handoffToken) destination = redirectWith(destination, 'handoff_token', handoffToken);
+          console.info('Nexuss Auth OAuth callback completed', { provider: stateRecord.provider, purpose: stateRecord.purpose ?? 'sign_in', durationMs: Date.now() - callbackStartedAt, handoff: Boolean(handoffToken) });
           return new Response(null, {
             status: 302,
             headers: {

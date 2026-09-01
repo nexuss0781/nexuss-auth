@@ -40,5 +40,6 @@ export function loadConfig(): ServerConfig {
     googleClientSecret: required('GOOGLE_CLIENT_SECRET'),
     githubClientId: required('GITHUB_CLIENT_ID'),
     githubClientSecret: required('GITHUB_CLIENT_SECRET'),
+    oauthRequestTimeoutMs: positiveInteger('NEX_AUTH_OAUTH_REQUEST_TIMEOUT_MS', 15_000),
   };
 }
