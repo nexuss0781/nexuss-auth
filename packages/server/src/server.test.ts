@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hashToken } from './crypto.js';
 import { createAuthApp } from './server.js';
-import type { ApiTokenRecord, Database, GithubConnectionRecord, GithubGrantRecord, HandoffRecord, OAuthProfile, OAuthStateRecord, ProjectRecord, SessionRecord, UserRecord } from './types.js';
+import type { ApiTokenRecord, Database, GithubConnectionRecord, GithubGrantRecord, HandoffRecord, OAuthFinalizationInput, OAuthFinalizationResult, OAuthProfile, OAuthStateRecord, ProjectRecord, SessionRecord, UserRecord } from './types.js';
 
 class MemoryDatabase implements Database {
   projects = new Map<string, ProjectRecord>();
@@ -13,6 +13,7 @@ class MemoryDatabase implements Database {
   users = new Map<string, UserRecord>();
   sessions = new Map<string, SessionRecord>();
   apiTokens = new Map<string, ApiTokenRecord>();
+  finalizeCalls = 0;
   async close(): Promise<void> {}
   async listProjects(ownerUserId?: string): Promise<ProjectRecord[]> { return [...this.projects.values()].filter((project) => !ownerUserId || project.ownerUserId === ownerUserId); }
   async getProject(projectId: string): Promise<ProjectRecord | null> { return this.projects.get(projectId) ?? null; }
@@ -31,6 +32,16 @@ class MemoryDatabase implements Database {
     return handoff;
   }
   async saveGithubConnection(connection: GithubConnectionRecord): Promise<void> { this.githubConnections.set(connection.userId, connection); }
+  async finalizeOAuthAuthorization(input: OAuthFinalizationInput): Promise<OAuthFinalizationResult> {
+    this.finalizeCalls += 1;
+    const user = this.users.get(input.state.userId ?? '');
+    if (!user) throw new Error('test user missing');
+    if (input.profile.accessToken) await this.saveGithubConnection({ userId: user.id, githubAccountId: input.profile.providerAccountId, login: input.profile.username || input.profile.name || input.profile.providerAccountId, accessToken: input.profile.accessToken, refreshToken: input.profile.refreshToken ?? null, expiresAt: input.profile.expiresInSeconds ? new Date(Date.now() + input.profile.expiresInSeconds * 1_000) : null, scopes: input.profile.scopes || [], updatedAt: new Date() });
+    await this.createSession({ userId: user.id, projectId: input.state.projectId, tokenHash: input.sessionTokenHash, expiresAt: input.sessionExpiresAt });
+    if (input.githubGrantHash && input.githubGrantExpiresAt) await this.createGithubGrant({ grantHash: input.githubGrantHash, projectId: input.state.projectId, userId: user.id, expiresAt: input.githubGrantExpiresAt });
+    if (input.handoffHash && input.handoffExpiresAt) await this.createHandoff({ handoffHash: input.handoffHash, projectId: input.state.projectId, userId: user.id, githubGrantToken: input.githubGrantToken ?? null, expiresAt: input.handoffExpiresAt });
+    return { user };
+  }
   async getGithubConnection(userId: string): Promise<GithubConnectionRecord | null> { return this.githubConnections.get(userId) ?? null; }
   async createGithubGrant(grant: GithubGrantRecord): Promise<void> { this.githubGrants.set(grant.grantHash, grant); }
   async getGithubGrant(grantHash: string): Promise<GithubGrantRecord | null> { return this.githubGrants.get(grantHash) ?? null; }
@@ -64,6 +75,7 @@ const config = {
   googleClientSecret: 'google-secret',
   githubClientId: 'github-id',
   githubClientSecret: 'github-secret',
+  oauthRequestTimeoutMs: 15_000,
 };
 
 const demoProject: ProjectRecord = {
@@ -116,6 +128,31 @@ test('GitHub authorization requests repository scope and grant access stays proj
     assert.equal((await repositories.json()).repositories[0].full_name, 'ada/private-repo');
     const wrongProject = await app.fetch(new Request('https://auth.example.com/v1/github/repositories?project_id=other', { headers: { authorization: 'Bearer grant-token' } }));
     assert.equal(wrongProject.status, 401);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('GitHub authorization finalizes persistence atomically', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject(demoProject);
+  db.users.set('u1', { id: 'u1', email: 'ada@example.com', name: 'Ada', avatarUrl: null });
+  db.states.set(hashToken('callback-state'), { stateHash: hashToken('callback-state'), projectId: 'demo', provider: 'github', redirectUri: 'https://demo.example.com/login', handoff: true, purpose: 'github_authorization', userId: 'u1', expiresAt: new Date(Date.now() + 60_000) });
+  const originalFetch = globalThis.fetch;
+  let call = 0;
+  globalThis.fetch = async () => {
+    call += 1;
+    if (call === 1) return new Response(JSON.stringify({ access_token: 'github-access', scope: 'repo' }), { status: 200 });
+    return new Response(JSON.stringify({ id: 42, login: 'ada', name: 'Ada', email: 'ada@example.com', avatar_url: null }), { status: 200 });
+  };
+  try {
+    const response = await createAuthApp(config, db).fetch(new Request('https://auth.example.com/oauth/callback?state=callback-state&code=callback-code'));
+    assert.equal(response.status, 302);
+    assert.equal(db.finalizeCalls, 1);
+    assert.equal(db.githubConnections.get('u1')?.accessToken, 'github-access');
+    assert.equal(db.sessions.size, 1);
+    assert.equal(db.githubGrants.size, 1);
+    assert.equal(db.handoffs.size, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

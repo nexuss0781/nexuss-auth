@@ -6,6 +6,8 @@ import type {
   GithubGrantRecord,
   Database,
   HandoffRecord,
+  OAuthFinalizationInput,
+  OAuthFinalizationResult,
   OAuthProfile,
   OAuthStateRecord,
   ProjectRecord,
@@ -194,6 +196,31 @@ export class PostgresDatabase implements Database {
     await this.pool.query(`INSERT INTO github_connections (user_id, github_account_id, login, access_token, refresh_token, expires_at, scopes, updated_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
       ON CONFLICT (user_id) DO UPDATE SET github_account_id = EXCLUDED.github_account_id, login = EXCLUDED.login, access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, expires_at = EXCLUDED.expires_at, scopes = EXCLUDED.scopes, updated_at = EXCLUDED.updated_at`, [connection.userId, connection.githubAccountId, connection.login, connection.accessToken, connection.refreshToken, connection.expiresAt, JSON.stringify(connection.scopes), connection.updatedAt]);
+  }
+
+  async finalizeOAuthAuthorization(input: OAuthFinalizationInput): Promise<OAuthFinalizationResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query<{ id: string; email: string | null; name: string | null; avatar_url: string | null }>('SELECT id, email, name, avatar_url FROM users WHERE id = $1', [input.state.userId]);
+      const row = result.rows[0];
+      if (!row) throw new Error('OAuth user disappeared before finalization');
+      if (input.profile.provider === 'github' && input.profile.accessToken) {
+        await client.query(`INSERT INTO github_connections (user_id, github_account_id, login, access_token, refresh_token, expires_at, scopes, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+          ON CONFLICT (user_id) DO UPDATE SET github_account_id = EXCLUDED.github_account_id, login = EXCLUDED.login, access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, expires_at = EXCLUDED.expires_at, scopes = EXCLUDED.scopes, updated_at = EXCLUDED.updated_at`, [row.id, input.profile.providerAccountId, input.profile.username || input.profile.name || input.profile.providerAccountId, input.profile.accessToken, input.profile.refreshToken ?? null, input.profile.expiresInSeconds ? new Date(Date.now() + input.profile.expiresInSeconds * 1_000) : null, JSON.stringify(input.profile.scopes || []), new Date()]);
+      }
+      await client.query('INSERT INTO sessions (token_hash, user_id, project_id, expires_at) VALUES ($1, $2, $3, $4)', [input.sessionTokenHash, row.id, input.state.projectId, input.sessionExpiresAt]);
+      if (input.githubGrantHash && input.githubGrantExpiresAt) await client.query('INSERT INTO github_grants (grant_hash, project_id, user_id, expires_at) VALUES ($1, $2, $3, $4)', [input.githubGrantHash, input.state.projectId, row.id, input.githubGrantExpiresAt]);
+      if (input.handoffHash && input.handoffExpiresAt) await client.query('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, github_grant_token, expires_at) VALUES ($1, $2, $3, $4, $5)', [input.handoffHash, input.state.projectId, row.id, input.githubGrantToken ?? null, input.handoffExpiresAt]);
+      await client.query('COMMIT');
+      return { user: { id: row.id, email: row.email, name: row.name, avatarUrl: row.avatar_url } };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getGithubConnection(userId: string): Promise<GithubConnectionRecord | null> {
