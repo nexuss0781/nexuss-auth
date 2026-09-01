@@ -135,15 +135,15 @@
 - [x] Create a structured `SKILL/` directory with a main directive and focused reference files.
 - [x] Document quick starts, complete API coverage, project lifecycle, session use, and automation boundaries.
 - [x] Add AI-agent operating rules, failure handling, validation steps, and production security directives.
-- [ ] Validate examples and commit the complete SKILL package.
+- [x] Validate examples and commit the complete SKILL package.
 
 ## SKILL distribution and release readiness
 
-- [ ] Include `SKILL/` in the published package contents without changing runtime behavior.
-- [ ] Add automated Markdown link, route-coverage, and code-example validation.
-- [ ] Add a documented SKILL version and changelog entry.
-- [ ] Run full repository tests, package inspection, and SKILL validation.
-- [ ] Commit the safe packaging update and prepare the end-to-end test procedure.
+- [x] Include `SKILL/` in the published package contents without changing runtime behavior.
+- [x] Add automated Markdown link, route-coverage, and code-example validation.
+- [x] Add a documented SKILL version and changelog entry.
+- [x] Run full repository tests, package inspection, and SKILL validation.
+- [x] Commit the safe packaging update and prepare the end-to-end test procedure.
 
 
 ## Release publication

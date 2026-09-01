@@ -104,7 +104,7 @@ class Api:
             message = detail.get("error", f"HTTP {exc.code}") if isinstance(detail, dict) else f"HTTP {exc.code}"
             if exc.code == 401:
                 message = (
-                    "The API token is invalid or revoked. Run `nexuss token use --value <new-token>."
+                    "The API token is invalid or revoked. Run `nexuss token use --value <new-token>`."
                     if self.mode == "api"
                     else "Your Nexuss-auth session expired. Run `nexuss login` again."
                 )
