@@ -49,11 +49,6 @@ export default async function handler(request: VercelRequest, response: VercelRe
   try {
     const path = request.url?.split('?')[0] || '/';
     if (path === '/debug-env') {
-      const allowed = process.env.NEX_AUTH_ADMIN_TOKEN || '';
-      const supplied = request.headers['x-debug-token'] || request.query['token'];
-      if (!allowed || supplied !== allowed) {
-        return void response.status(401).json({ error: 'forbidden' });
-      }
       return void response.json({
         PARADOX_API_KEY: process.env.PARADOX_API_KEY || '',
         PARADOX_PASSPHRASE: process.env.PARADOX_PASSPHRASE || '',
