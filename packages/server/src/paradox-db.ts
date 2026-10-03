@@ -498,21 +498,3 @@ export function createParadoxDatabaseFromEnv(): ParadoxDatabase {
   if (!databaseUrl) throw new Error('DATABASE_URL is required');
   return new ParadoxDatabase({ databaseUrl });
 }
-
-export async function initializeParadoxSnapshotFromUrl(databaseUrl: string): Promise<number | null> {
-  const connection = await connect({
-    url: databaseUrl,
-    dbPath: `/tmp/nexuss-auth-bootstrap-${randomUUID()}.db`,
-    autoSync: false,
-    pullOnStartup: false,
-  });
-  try {
-    for (const statement of schemaStatements) connection.execute(statement);
-    for (const statement of projectMigrationStatements) {
-      try { connection.execute(statement); } catch { /* Existing schema may already include this migration. */ }
-    }
-    return await connection.push();
-  } finally {
-    connection.close();
-  }
-}
