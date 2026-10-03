@@ -9,10 +9,6 @@
   },
   "rewrites": [
     {
-      "source": "/debug-env",
-      "destination": "/api"
-    },
-    {
       "source": "/v1/(.*)",
       "destination": "/api"
     },
