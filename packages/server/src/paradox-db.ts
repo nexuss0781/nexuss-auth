@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { connect, type ParadConnection } from 'parad';
+import { connect, GatewayClient, parseUrl, type ParadConnection } from 'parad';
 import type {
   ApiTokenRecord,
   CreateSessionInput,
@@ -123,11 +123,7 @@ const projectMigrationStatements = [
 ];
 
 type ParadConfig = {
-  gatewayUrl: string;
-  apiKey: string;
-  passphrase: string;
-  project: string;
-  name: string;
+  databaseUrl: string;
 };
 
 function iso(value: Date): string {
@@ -204,27 +200,53 @@ export class ParadoxDatabase implements Database {
     this.initialized = false;
   }
 
-  private async assertRemoteSnapshot(): Promise<void> {
-    const url = new URL(`${this.config.gatewayUrl}/download`);
-    url.searchParams.set('database_name', this.config.name);
-    url.searchParams.set('project_id', this.config.project);
-    const response = await fetch(url, { headers: { 'X-API-Key': this.config.apiKey } });
-    if (!response.ok) throw new Error(`Paradox remote snapshot unavailable (HTTP ${response.status})`);
-    const bytes = await response.arrayBuffer();
-    if (bytes.byteLength === 0) throw new Error('Paradox remote snapshot is empty');
+  private async assertRemoteSnapshot(): Promise<ReturnType<typeof parseUrl>> {
+    let parsed: ReturnType<typeof parseUrl>;
+    try {
+      parsed = parseUrl(this.config.databaseUrl);
+    } catch {
+      throw new Error('DATABASE_URL must be a valid canonical Paradox URL');
+    }
+    if (!parsed.gateway_url || !parsed.project || !parsed.token || !parsed.passphrase) {
+      throw new Error('DATABASE_URL must include gateway, project, database, API key, and passphrase');
+    }
+
+    const gateway = new GatewayClient(parsed.gateway_url, parsed.token);
+    const projects = await gateway.listProjects() as Array<{ id: string; name: string }>;
+    const matchingProjects = projects.filter((project) => project.name === parsed.project);
+    if (matchingProjects.length !== 1 || !matchingProjects[0]?.id) {
+      throw new Error('Paradox project configured in DATABASE_URL is missing or ambiguous');
+    }
+    const project = matchingProjects[0];
+
+    const databases = await gateway.listDatabases(project.id) as Array<{ id: string; name: string }>;
+    const matchingDatabases = databases.filter((database) => database.name === parsed.name);
+    if (matchingDatabases.length !== 1 || !matchingDatabases[0]?.id) {
+      throw new Error('Paradox database configured in DATABASE_URL is missing or ambiguous');
+    }
+    const database = matchingDatabases[0];
+
+    let snapshot;
+    try {
+      snapshot = await gateway.download('', undefined, database.id, project.id);
+    } catch (error) {
+      const statusCode = error && typeof error === 'object' && 'statusCode' in error
+        ? (error as { statusCode?: unknown }).statusCode
+        : undefined;
+      const status = typeof statusCode === 'number' ? ` (HTTP ${statusCode})` : '';
+      throw new Error(`Paradox remote snapshot unavailable${status}`);
+    }
+    if (snapshot.bytes.byteLength === 0) throw new Error('Paradox remote snapshot is empty');
+    return parsed;
   }
 
   private async open(pullBeforeWork = false): Promise<ParadConnection> {
     if (!this.connection) {
-      await this.assertRemoteSnapshot();
-      const dbPath = `/tmp/${this.config.name}.db`;
+      const parsed = await this.assertRemoteSnapshot();
+      const dbPath = `/tmp/${encodeURIComponent(parsed.name)}.db`;
       this.connection = await connect({
-        name: this.config.name,
-        project: this.config.project,
+        url: this.config.databaseUrl,
         dbPath,
-        gatewayUrl: this.config.gatewayUrl,
-        apiKey: this.config.apiKey,
-        passphrase: this.config.passphrase,
         autoSync: false,
         pullOnStartup: false,
       });
@@ -472,17 +494,25 @@ export class ParadoxDatabase implements Database {
 }
 
 export function createParadoxDatabaseFromEnv(): ParadoxDatabase {
-  const gatewayUrl = process.env.PARADOX_GATEWAY_URL;
-  const apiKey = process.env.PARADOX_API_KEY;
-  const passphrase = process.env.PARADOX_PASSPHRASE;
-  if (!gatewayUrl || !apiKey || !passphrase) {
-    throw new Error('PARADOX_GATEWAY_URL, PARADOX_API_KEY, and PARADOX_PASSPHRASE are required');
-  }
-  return new ParadoxDatabase({
-    gatewayUrl: gatewayUrl.replace(/\/$/, ''),
-    apiKey,
-    passphrase,
-    project: process.env.PARADOX_PROJECT || 'nexuss-auth',
-    name: process.env.PARADOX_DATABASE || 'nexuss-auth',
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) throw new Error('DATABASE_URL is required');
+  return new ParadoxDatabase({ databaseUrl });
+}
+
+export async function initializeParadoxSnapshotFromUrl(databaseUrl: string): Promise<number | null> {
+  const connection = await connect({
+    url: databaseUrl,
+    dbPath: `/tmp/nexuss-auth-bootstrap-${randomUUID()}.db`,
+    autoSync: false,
+    pullOnStartup: false,
   });
+  try {
+    for (const statement of schemaStatements) connection.execute(statement);
+    for (const statement of projectMigrationStatements) {
+      try { connection.execute(statement); } catch { /* Existing schema may already include this migration. */ }
+    }
+    return await connection.push();
+  } finally {
+    connection.close();
+  }
 }
