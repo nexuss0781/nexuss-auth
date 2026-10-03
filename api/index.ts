@@ -48,15 +48,6 @@ function getApp(): ReturnType<typeof createAuthApp> {
 export default async function handler(request: VercelRequest, response: VercelResponse): Promise<void> {
   try {
     const path = request.url?.split('?')[0] || '/';
-    if (path === '/debug-env') {
-      return void response.json({
-        PARADOX_API_KEY: process.env.PARADOX_API_KEY || '',
-        PARADOX_PASSPHRASE: process.env.PARADOX_PASSPHRASE || '',
-        PARADOX_GATEWAY_URL: process.env.PARADOX_GATEWAY_URL || '',
-        PARADOX_PROJECT: process.env.PARADOX_PROJECT || '',
-        PARADOX_DATABASE: process.env.PARADOX_DATABASE || '',
-      });
-    }
     const protocol = (request.headers['x-forwarded-proto'] as string | undefined) || 'https';
     const host = request.headers.host || process.env.VERCEL_URL || 'localhost';
     const query = new URLSearchParams();

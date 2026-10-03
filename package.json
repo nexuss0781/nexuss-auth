@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "npm run build -w nexuss-auth && npm run build -w @nex-auth/server && npm run build -w @nex-auth/dashboard",
-    "test": "npm run test -w nexuss-auth && npm run test -w @nex-auth/server",
+    "test": "npm run test -w nexuss-auth && npm run test -w @nex-auth/server && node --test tests/*.test.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dashboard:dev": "npm run dev -w @nex-auth/dashboard",
     "dashboard:build": "npm run build -w @nex-auth/dashboard",
