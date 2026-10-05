@@ -73,7 +73,7 @@ The exchange consumes the handoff record. A replay must fail. The application mu
 
 ## Project management payloads
 
-Create requests require `projectId`, `name`, `homepageUrl`, at least one `allowedRedirectUris` entry, `enabledProviders`, and `status`. `allowedOrigins` should contain the exact application origins. Patch only fields that the task changes. Inspect before patch or delete.
+Create requests require `projectId`, `name`, `homepageUrl`, at least one `allowedRedirectUris` entry, `enabledProviders`, and `status`. Supported providers are `google`, `github`, and `envx`. Optional `requiredProvider` must also appear in `enabledProviders`; `strictCredentials: true` requires server-issued project provenance on sessions and tokens. `allowedOrigins` should contain the exact application origins. Patch only fields that the task changes. Inspect before patch or delete.
 
 ## Status handling
 

@@ -1,6 +1,6 @@
 # Application integration guide
 
-Use this guide when an application needs Google or GitHub sign-in through Nexuss Auth. Follow the sections in order. Do not mix the browser-cookie flow and the server-handoff flow in the same application unless the application has a deliberate migration plan.
+Use this guide when an application needs Google, GitHub, or ENVX OIDC sign-in through Nexuss Auth. Follow the sections in order. Do not mix the browser-cookie flow and the server-handoff flow in the same application unless the application has a deliberate migration plan.
 
 ## 1. Decide the session model first
 
@@ -21,7 +21,7 @@ Before changing application code, confirm the project record. The project must b
 {
   "projectId": "your-project-id",
   "status": "active",
-  "enabledProviders": ["google"],
+  "enabledProviders": ["google", "github", "envx"],
   "homepageUrl": "https://app.example.com/",
   "allowedRedirectUris": [
     "https://app.example.com/auth/callback"
@@ -48,7 +48,7 @@ The provider command replaces the complete provider list. Include every provider
 
 ## 3. Configure provider credentials
 
-Provider credentials belong only in the Nexuss Auth service environment. They do not belong in the application, browser bundle, project file, or frontend environment.
+Provider credentials belong only in the Nexuss Auth service environment. They do not belong in the application, browser bundle, project file, or frontend environment. ENVX uses a confidential OIDC client registered on the existing ENVX/Supabase Auth OAuth Server project; enable asymmetric JWT signing and request `openid email profile`.
 
 ```text
 NEX_AUTH_PUBLIC_URL=https://auth.example.com
@@ -56,15 +56,20 @@ GOOGLE_CLIENT_ID=<protected Google client ID>
 GOOGLE_CLIENT_SECRET=<protected Google client secret>
 GITHUB_CLIENT_ID=<protected GitHub client ID>
 GITHUB_CLIENT_SECRET=<protected GitHub client secret>
+ENVX_OIDC_ISSUER_URL=https://<project-ref>.supabase.co/auth/v1
+ENVX_OIDC_CLIENT_ID=<protected ENVX OAuth client ID>
+ENVX_OIDC_CLIENT_SECRET=<protected ENVX OAuth client secret>
 ```
 
-The Google or GitHub provider console must register Nexuss Auth’s callback, not the application callback. For example:
+Each upstream provider must register Nexuss Auth’s callback, not the application callback. For example:
 
 ```text
 https://auth.example.com/oauth/callback
 ```
 
 Nexuss Auth then validates the application callback against the project’s `allowedRedirectUris` list.
+
+For an ENVX-only application, set `enabledProviders: ["envx"]`, `requiredProvider: "envx"`, and `strictCredentials: true`. The server enforces the exact issuer, stable OIDC `sub`, project ID, and server-generated `project:<project-id>:access` permission; do not grant privilege from an email match.
 
 ## 4. Configure the application
 
@@ -111,6 +116,11 @@ Use this flow only when the application and Nexuss Auth are same-site and the br
 await auth.signInWithGoogle({
   redirectUri: process.env.NEXUSS_AUTH_REDIRECT_URI!,
 });
+
+// Or use ENVX as the project's required identity provider.
+await auth.signInWithEnvx({
+  redirectUri: process.env.NEXUSS_AUTH_REDIRECT_URI!,
+});
 ```
 
 After the callback route loads, ask Nexuss Auth for the current user:
@@ -131,7 +141,7 @@ A `200` response with `user: null` is a valid signed-out result. Do not treat a 
 Use this flow for cross-site deployments. Request the handoff explicitly:
 
 ```ts
-await auth.signInWithGoogle({
+await auth.signInWithEnvx({
   redirectUri: process.env.NEXUSS_AUTH_REDIRECT_URI!,
   handoff: true,
 });
@@ -183,7 +193,7 @@ Complete every check before declaring integration complete:
 3. Confirm the requested provider appears in `enabledProviders`.
 4. Confirm the exact application callback appears in `allowedRedirectUris`.
 5. Confirm the application origin appears in `allowedOrigins`.
-6. Confirm the Google or GitHub console points to Nexuss Auth’s `/oauth/callback`.
+6. Confirm the Google, GitHub, or ENVX OAuth registration points to Nexuss Auth’s exact `/oauth/callback` URI.
 7. Confirm the OAuth start route is opened as a browser navigation, not fetched as JSON.
 8. Complete one successful sign-in and one cancellation test.
 9. For same-site mode, verify `getUser()` after callback and refresh.
@@ -207,4 +217,4 @@ Complete every check before declaring integration complete:
 
 ## 11. Security rules
 
-The application must not handle Google or GitHub client secrets. The browser must not receive management credentials. Handoff tokens and OAuth codes are bearer-like, short-lived secrets and must be handled only by the trusted callback server. The application must enforce its own authorization policy after identity verification. Nexuss Auth identity proves who signed in; it does not automatically authorize access to every application resource.
+The application must not handle provider client secrets or an ENVX password. The browser must not receive management credentials. Handoff tokens and OAuth codes are bearer-like, short-lived secrets and must be handled only by the trusted callback server. The application must enforce its own authorization policy after identity verification. Nexuss Auth identity proves who signed in; it does not automatically authorize access to every application resource.

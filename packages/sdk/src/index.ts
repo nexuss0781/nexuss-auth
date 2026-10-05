@@ -1,4 +1,4 @@
-export type Provider = 'google' | 'github';
+export type Provider = 'google' | 'github' | 'envx';
 
 export interface NexAuthUser {
   id: string;
@@ -35,6 +35,8 @@ export interface NexAuthProject {
   allowedOrigins: string[];
   enabledProviders: Provider[];
   status: ProjectStatus;
+  requiredProvider?: Provider | null;
+  strictCredentials?: boolean;
 }
 
 export type CreateProjectInput = NexAuthProject;
@@ -64,7 +66,7 @@ export interface NexAuthApiToken {
 
 export function buildLoginUrl(config: Pick<NexAuthConfig, 'projectId' | 'authUrl'>, provider: Provider, redirectUri: string, options: Pick<SignInOptions, 'handoff'> = {}): string {
   if (!config.projectId.trim()) throw new Error('Nex-auth projectId is required');
-  if (!['google', 'github'].includes(provider)) throw new Error(`Unsupported provider: ${provider}`);
+  if (!['google', 'github', 'envx'].includes(provider)) throw new Error(`Unsupported provider: ${provider}`);
   const url = new URL(`/oauth/start/${provider}`, config.authUrl);
   url.searchParams.set('project_id', config.projectId);
   url.searchParams.set('redirect_uri', redirectUri);
@@ -106,6 +108,10 @@ export class NexAuthClient {
 
   signInWithGitHub(options: SignInOptions = {}): void {
     this.signIn('github', options);
+  }
+
+  signInWithEnvx(options: SignInOptions = {}): void {
+    this.signIn('envx', options);
   }
 
   async getUser(): Promise<NexAuthUser | null> {

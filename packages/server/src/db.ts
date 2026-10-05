@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { IdentityLinkRequiredError } from './types.js';
 import type {
   ApiTokenRecord,
   CreateSessionInput,
@@ -28,7 +29,9 @@ type ProjectRow = {
   avatar_url: string | null;
   allowed_redirect_uris: string[];
   allowed_origins: string[];
-  enabled_providers: ('google' | 'github')[];
+  enabled_providers: ('google' | 'github' | 'envx')[];
+  required_provider: 'google' | 'github' | 'envx' | null;
+  strict_credentials: boolean;
   status: 'active' | 'disabled';
 };
 
@@ -43,6 +46,8 @@ function projectFromRow(row: ProjectRow): ProjectRecord {
     allowedRedirectUris: row.allowed_redirect_uris,
     allowedOrigins: row.allowed_origins,
     enabledProviders: row.enabled_providers,
+    requiredProvider: row.required_provider,
+    strictCredentials: row.strict_credentials,
     status: row.status,
   };
 }
@@ -59,6 +64,19 @@ export class PostgresDatabase implements Database {
       ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'sign_in';
       ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS user_id UUID;
       ALTER TABLE oauth_handoffs ADD COLUMN IF NOT EXISTS github_grant_token TEXT;
+      ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS code_verifier TEXT;
+      ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS nonce TEXT;
+      ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS client_state TEXT;
+      ALTER TABLE identities ADD COLUMN IF NOT EXISTS issuer TEXT;
+      ALTER TABLE identities ADD COLUMN IF NOT EXISTS subject TEXT;
+      ALTER TABLE oauth_handoffs ADD COLUMN IF NOT EXISTS provider TEXT;
+      ALTER TABLE oauth_handoffs ADD COLUMN IF NOT EXISTS issuer TEXT;
+      ALTER TABLE oauth_handoffs ADD COLUMN IF NOT EXISTS subject TEXT;
+      ALTER TABLE oauth_handoffs ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '[]'::jsonb;
+      ALTER TABLE projects ADD COLUMN IF NOT EXISTS required_provider TEXT;
+      ALTER TABLE projects ADD COLUMN IF NOT EXISTS strict_credentials BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS provider TEXT; ALTER TABLE sessions ADD COLUMN IF NOT EXISTS issuer TEXT; ALTER TABLE sessions ADD COLUMN IF NOT EXISTS subject TEXT; ALTER TABLE sessions ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '[]'::jsonb;
+      ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS project_id TEXT; ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS provider TEXT; ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS issuer TEXT; ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS subject TEXT; ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '[]'::jsonb;
       CREATE TABLE IF NOT EXISTS github_connections (
         user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         github_account_id TEXT NOT NULL,
@@ -86,8 +104,8 @@ export class PostgresDatabase implements Database {
   async listProjects(ownerUserId?: string): Promise<ProjectRecord[]> {
     const result = await this.pool.query<ProjectRow>(
       ownerUserId
-        ? 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE owner_user_id = $1 ORDER BY created_at DESC, project_id ASC'
-        : 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects ORDER BY created_at DESC, project_id ASC',
+        ? 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, required_provider, strict_credentials, status FROM projects WHERE owner_user_id = $1 ORDER BY created_at DESC, project_id ASC'
+        : 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, required_provider, strict_credentials, status FROM projects ORDER BY created_at DESC, project_id ASC',
       ownerUserId ? [ownerUserId] : [],
     );
     return result.rows.map(projectFromRow);
@@ -95,7 +113,7 @@ export class PostgresDatabase implements Database {
 
   async getProject(projectId: string): Promise<ProjectRecord | null> {
     const result = await this.pool.query<ProjectRow>(
-      'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE project_id = $1',
+      'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, required_provider, strict_credentials, status FROM projects WHERE project_id = $1',
       [projectId],
     );
     const row = result.rows[0];
@@ -104,8 +122,8 @@ export class PostgresDatabase implements Database {
 
   async upsertProject(project: ProjectRecord): Promise<ProjectRecord> {
     await this.pool.query(
-      `INSERT INTO projects (project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO projects (project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, required_provider, strict_credentials, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (project_id) DO UPDATE SET
          owner_user_id = COALESCE(EXCLUDED.owner_user_id, projects.owner_user_id),
          name = EXCLUDED.name,
@@ -115,9 +133,10 @@ export class PostgresDatabase implements Database {
          allowed_redirect_uris = EXCLUDED.allowed_redirect_uris,
          allowed_origins = EXCLUDED.allowed_origins,
          enabled_providers = EXCLUDED.enabled_providers,
+         required_provider = EXCLUDED.required_provider, strict_credentials = EXCLUDED.strict_credentials,
          status = EXCLUDED.status,
          updated_at = now()`,
-      [project.projectId, project.ownerUserId, project.name, project.homepageUrl, project.description, project.avatarUrl, project.allowedRedirectUris, project.allowedOrigins, project.enabledProviders, project.status],
+      [project.projectId, project.ownerUserId, project.name, project.homepageUrl, project.description, project.avatarUrl, project.allowedRedirectUris, project.allowedOrigins, project.enabledProviders, project.requiredProvider ?? null, project.strictCredentials ?? false, project.status],
     );
     return project;
   }
@@ -128,9 +147,9 @@ export class PostgresDatabase implements Database {
 
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff, state.userId ?? null, state.expiresAt, state.purpose ?? 'sign_in'],
+      `INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose, code_verifier, nonce, client_state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff, state.userId ?? null, state.expiresAt, state.purpose ?? 'sign_in', state.codeVerifier ?? null, state.nonce ?? null, state.clientState ?? null],
     );
   }
 
@@ -141,21 +160,21 @@ export class PostgresDatabase implements Database {
       const result = await client.query<{
         state_hash: string;
         project_id: string;
-        provider: 'google' | 'github';
+        provider: 'google' | 'github' | 'envx';
         redirect_uri: string;
         handoff: boolean;
         user_id: string | null;
         expires_at: Date;
-        purpose: 'sign_in' | 'github_authorization';
+        purpose: 'sign_in' | 'github_authorization'; code_verifier: string | null; nonce: string | null; client_state: string | null;
       }>(
         `DELETE FROM oauth_states WHERE state_hash = $1
-         RETURNING state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose`,
+         RETURNING state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose, code_verifier, nonce, client_state`,
         [stateHash],
       );
       await client.query('COMMIT');
       const row = result.rows[0];
       return row
-        ? { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff, userId: row.user_id, purpose: row.purpose || 'sign_in', expiresAt: row.expires_at }
+        ? { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff, userId: row.user_id, purpose: row.purpose || 'sign_in', codeVerifier: row.code_verifier, nonce: row.nonce, clientState: row.client_state, expiresAt: row.expires_at }
         : null;
     } catch (error) {
       await client.query('ROLLBACK');
@@ -167,8 +186,8 @@ export class PostgresDatabase implements Database {
 
   async createHandoff(handoff: HandoffRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, github_grant_token, expires_at) VALUES ($1, $2, $3, $4, $5)`,
-      [handoff.handoffHash, handoff.projectId, handoff.userId, handoff.githubGrantToken ?? null, handoff.expiresAt],
+      `INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, provider, issuer, subject, permissions, github_grant_token, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)`,
+      [handoff.handoffHash, handoff.projectId, handoff.userId, handoff.provider ?? null, handoff.issuer ?? null, handoff.subject ?? null, JSON.stringify(handoff.permissions ?? []), handoff.githubGrantToken ?? null, handoff.expiresAt],
     );
   }
 
@@ -176,14 +195,14 @@ export class PostgresDatabase implements Database {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-            const result = await client.query<{ handoff_hash: string; project_id: string; user_id: string; github_grant_token: string | null; expires_at: Date }>(
+      const result = await client.query<{ handoff_hash: string; project_id: string; user_id: string; provider: 'google' | 'github' | 'envx' | null; issuer: string | null; subject: string | null; permissions: string[]; github_grant_token: string | null; expires_at: Date }>(
         `DELETE FROM oauth_handoffs WHERE handoff_hash = $1
-         RETURNING handoff_hash, project_id, user_id, github_grant_token, expires_at`,
+         RETURNING handoff_hash, project_id, user_id, provider, issuer, subject, permissions, github_grant_token, expires_at`,
         [handoffHash],
       );
       await client.query('COMMIT');
       const row = result.rows[0];
-      return row ? { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, githubGrantToken: row.github_grant_token, expiresAt: row.expires_at } : null;
+      return row ? { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, provider: row.provider, issuer: row.issuer, subject: row.subject, permissions: row.permissions || [], githubGrantToken: row.github_grant_token, expiresAt: row.expires_at } : null;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -210,9 +229,9 @@ export class PostgresDatabase implements Database {
           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
           ON CONFLICT (user_id) DO UPDATE SET github_account_id = EXCLUDED.github_account_id, login = EXCLUDED.login, access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, expires_at = EXCLUDED.expires_at, scopes = EXCLUDED.scopes, updated_at = EXCLUDED.updated_at`, [row.id, input.profile.providerAccountId, input.profile.username || input.profile.name || input.profile.providerAccountId, input.profile.accessToken, input.profile.refreshToken ?? null, input.profile.expiresInSeconds ? new Date(Date.now() + input.profile.expiresInSeconds * 1_000) : null, JSON.stringify(input.profile.scopes || []), new Date()]);
       }
-      await client.query('INSERT INTO sessions (token_hash, user_id, project_id, expires_at) VALUES ($1, $2, $3, $4)', [input.sessionTokenHash, row.id, input.state.projectId, input.sessionExpiresAt]);
+      await client.query('INSERT INTO sessions (token_hash, user_id, project_id, provider, issuer, subject, permissions, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)', [input.sessionTokenHash, row.id, input.state.projectId, input.profile.provider, input.profile.issuer ?? null, input.profile.subject ?? input.profile.providerAccountId, JSON.stringify(input.profile.permissions ?? []), input.sessionExpiresAt]);
       if (input.githubGrantHash && input.githubGrantExpiresAt) await client.query('INSERT INTO github_grants (grant_hash, project_id, user_id, expires_at) VALUES ($1, $2, $3, $4)', [input.githubGrantHash, input.state.projectId, row.id, input.githubGrantExpiresAt]);
-      if (input.handoffHash && input.handoffExpiresAt) await client.query('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, github_grant_token, expires_at) VALUES ($1, $2, $3, $4, $5)', [input.handoffHash, input.state.projectId, row.id, input.githubGrantToken ?? null, input.handoffExpiresAt]);
+      if (input.handoffHash && input.handoffExpiresAt) await client.query('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, provider, issuer, subject, permissions, github_grant_token, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)', [input.handoffHash, input.state.projectId, row.id, input.profile.provider, input.profile.issuer ?? null, input.profile.subject ?? input.profile.providerAccountId, JSON.stringify(input.profile.permissions ?? []), input.githubGrantToken ?? null, input.handoffExpiresAt]);
       await client.query('COMMIT');
       return { user: { id: row.id, email: row.email, name: row.name, avatarUrl: row.avatar_url } };
     } catch (error) {
@@ -253,6 +272,7 @@ export class PostgresDatabase implements Database {
         const existingUser = safeEmail
           ? await client.query<{ id: string }>('SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1', [safeEmail])
           : { rows: [] as { id: string }[] };
+        if (profile.provider === 'envx' && existingUser.rows[0]) throw new IdentityLinkRequiredError();
         userId = existingUser.rows[0]?.id;
       }
       if (!userId) {
@@ -270,11 +290,11 @@ export class PostgresDatabase implements Database {
       }
       if (!userId) throw new Error('Unable to create or locate user');
       await client.query(
-        `INSERT INTO identities (user_id, provider, provider_account_id, email, email_verified)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO identities (user_id, provider, issuer, subject, provider_account_id, email, email_verified)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (provider, provider_account_id)
-         DO UPDATE SET email = EXCLUDED.email, email_verified = EXCLUDED.email_verified, updated_at = now()`,
-        [userId, profile.provider, profile.providerAccountId, safeEmail, profile.emailVerified],
+         DO UPDATE SET issuer = EXCLUDED.issuer, subject = EXCLUDED.subject, email = EXCLUDED.email, email_verified = EXCLUDED.email_verified, updated_at = now()`,
+        [userId, profile.provider, profile.issuer ?? null, profile.subject ?? null, profile.providerAccountId, safeEmail, profile.emailVerified],
       );
       await client.query('COMMIT');
       const user = await client.query<{ id: string; email: string | null; name: string | null; avatar_url: string | null }>(
@@ -294,18 +314,18 @@ export class PostgresDatabase implements Database {
 
   async createSession(input: CreateSessionInput): Promise<void> {
     await this.pool.query(
-      `INSERT INTO sessions (token_hash, user_id, project_id, expires_at) VALUES ($1, $2, $3, $4)`,
-      [input.tokenHash, input.userId, input.projectId, input.expiresAt],
+      `INSERT INTO sessions (token_hash, user_id, project_id, provider, issuer, subject, permissions, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [input.tokenHash, input.userId, input.projectId, input.provider ?? null, input.issuer ?? null, input.subject ?? null, JSON.stringify(input.permissions ?? []), input.expiresAt],
     );
   }
 
   async getSession(tokenHash: string): Promise<SessionRecord | null> {
-    const result = await this.pool.query<{ token_hash: string; user_id: string; project_id: string; expires_at: Date }>(
-      `SELECT token_hash, user_id, project_id, expires_at FROM sessions WHERE token_hash = $1 AND expires_at > now()`,
+    const result = await this.pool.query<{ token_hash: string; user_id: string; project_id: string; provider: string | null; issuer: string | null; subject: string | null; permissions: string[]; expires_at: Date }>(
+      `SELECT token_hash, user_id, project_id, provider, issuer, subject, permissions, expires_at FROM sessions WHERE token_hash = $1 AND expires_at > now()`,
       [tokenHash],
     );
     const row = result.rows[0];
-    return row ? { tokenHash: row.token_hash, userId: row.user_id, projectId: row.project_id, expiresAt: row.expires_at } : null;
+    return row ? { tokenHash: row.token_hash, userId: row.user_id, projectId: row.project_id, provider: (row.provider as 'google' | 'github' | 'envx' | null) ?? null, issuer: row.issuer ?? null, subject: row.subject ?? null, permissions: row.permissions || [], expiresAt: row.expires_at } : null;
   }
 
   async getUser(userId: string): Promise<UserRecord | null> {
@@ -322,18 +342,18 @@ export class PostgresDatabase implements Database {
   }
 
   async createApiToken(token: ApiTokenRecord): Promise<void> {
-    await this.pool.query('INSERT INTO api_tokens (token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', [token.tokenId, token.userId, token.tokenHash, token.tokenPrefix, token.label, token.createdAt, token.lastUsedAt, token.revokedAt]);
+    await this.pool.query('INSERT INTO api_tokens (token_id, user_id, token_hash, token_prefix, project_id, provider, issuer, subject, permissions, label, created_at, last_used_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)', [token.tokenId, token.userId, token.tokenHash, token.tokenPrefix, token.projectId ?? null, token.provider ?? null, token.issuer ?? null, token.subject ?? null, JSON.stringify(token.permissions ?? []), token.label, token.createdAt, token.lastUsedAt, token.revokedAt]);
   }
 
   async listApiTokens(userId: string): Promise<ApiTokenRecord[]> {
-    const result = await this.pool.query<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; label: string; created_at: Date; last_used_at: Date | null; revoked_at: Date | null }>('SELECT token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE user_id = $1 ORDER BY created_at DESC', [userId]);
-    return result.rows.map((row) => ({ tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, label: row.label, createdAt: row.created_at, lastUsedAt: row.last_used_at, revokedAt: row.revoked_at }));
+    const result = await this.pool.query<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; project_id: string | null; provider: string | null; issuer: string | null; subject: string | null; permissions: string[]; label: string; created_at: Date; last_used_at: Date | null; revoked_at: Date | null }>('SELECT token_id, user_id, token_hash, token_prefix, project_id, provider, issuer, subject, permissions, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE user_id = $1 ORDER BY created_at DESC', [userId]);
+    return result.rows.map((row) => ({ tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, projectId: row.project_id, provider: (row.provider as 'google' | 'github' | 'envx' | null) ?? null, issuer: row.issuer, subject: row.subject, permissions: row.permissions || [], label: row.label, createdAt: row.created_at, lastUsedAt: row.last_used_at, revokedAt: row.revoked_at }));
   }
 
   async getApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null> {
-    const result = await this.pool.query<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; label: string; created_at: Date; last_used_at: Date | null; revoked_at: Date | null }>('SELECT token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE token_hash = $1 AND revoked_at IS NULL', [tokenHash]);
+    const result = await this.pool.query<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; project_id: string | null; provider: string | null; issuer: string | null; subject: string | null; permissions: string[]; label: string; created_at: Date; last_used_at: Date | null; revoked_at: Date | null }>('SELECT token_id, user_id, token_hash, token_prefix, project_id, provider, issuer, subject, permissions, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE token_hash = $1 AND revoked_at IS NULL', [tokenHash]);
     const row = result.rows[0];
-    return row ? { tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, label: row.label, createdAt: row.created_at, lastUsedAt: row.last_used_at, revokedAt: row.revoked_at } : null;
+    return row ? { tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, projectId: row.project_id, provider: (row.provider as 'google' | 'github' | 'envx' | null) ?? null, issuer: row.issuer, subject: row.subject, permissions: row.permissions || [], label: row.label, createdAt: row.created_at, lastUsedAt: row.last_used_at, revokedAt: row.revoked_at } : null;
   }
 
   async touchApiToken(tokenId: string): Promise<void> {
