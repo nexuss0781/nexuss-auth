@@ -22,6 +22,7 @@ Never send an admin credential, project token, provider secret, cookie, OAuth co
 | `/health` | `GET` | Service availability | A successful result does not prove project or provider correctness |
 | `/oauth/start/google` | `GET` | Start Google sign-in | Navigate the browser with `project_id`, exact `redirect_uri`, and optional `handoff=1` |
 | `/oauth/start/github` | `GET` | Start GitHub sign-in | Navigate the browser with `project_id`, exact `redirect_uri`, and optional `handoff=1` |
+| `/oauth/start/envx` | `GET` | Start ENVX OIDC sign-in | Navigate the browser with `project_id`, exact `redirect_uri`, and optional `handoff=1` |
 | `/oauth/callback` | `GET` | Provider callback handled by Nexuss Auth | Do not call directly from application code |
 | `/v1/me` | `GET` | Read the current Nexuss Auth identity | Use browser credentials and project context; `user: null` means signed out |
 | `/v1/logout` | `POST` | Clear the Nexuss Auth session | Clear application-local state separately |
@@ -35,6 +36,7 @@ Start OAuth by browser navigation, not by expecting a JSON response:
 
 ```text
 https://nexuss-auth.vercel.app/oauth/start/google?project_id=PROJECT_ID&redirect_uri=ENCODED_CALLBACK
+https://nexuss-auth.vercel.app/oauth/start/envx?project_id=PROJECT_ID&redirect_uri=ENCODED_CALLBACK
 ```
 
 For a cross-site application, add `handoff=1`. Nexuss Auth validates that the project is active and that the requested provider is enabled before checking the exact redirect URI.
@@ -89,3 +91,22 @@ Create requests require `projectId`, `name`, `homepageUrl`, at least one `allowe
 | `5xx` | Service, provider, or persistence failure | Check `/health` and protected logs, then recover deliberately |
 
 Never log authorization headers, cookies, full tokens, OAuth codes, state values, handoff tokens, or complete provider authorization URLs.
+
+## 10. Central GitHub repository authorization
+
+Use the GitHub OAuth start route with `purpose=github_authorization` only when a configured relying application needs repository access:
+
+```text
+GET /oauth/start/github?project_id=PROJECT_ID&redirect_uri=ENCODED_CALLBACK&handoff=1&purpose=github_authorization
+```
+
+The callback remains `/oauth/callback` on Nexuss Auth. After the relying application exchanges the one-time handoff, the successful response may include an opaque `githubGrantToken`. The application server may use that value, with the same `project_id`, on:
+
+```text
+GET /v1/github/repositories?project_id=PROJECT_ID
+GET /v1/github/clone-token?project_id=PROJECT_ID
+```
+
+The repositories response contains repository metadata only. The clone-token response is for a trusted application server performing an immediate clone. Do not send it to browser code, persist it in the relying application, include it in a URL, or log it. Nexuss Auth retains the actual GitHub provider token and checks the grant’s project and expiry on every request.
+
+A relying application must not configure `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET`; those credentials belong only to Nexuss Auth. `401` responses from either repository route mean the grant or central GitHub connection is missing, expired, or invalid and require a fresh authorization navigation.

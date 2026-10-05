@@ -22,6 +22,7 @@ Never send an admin credential, project token, provider secret, cookie, OAuth co
 | `/health` | `GET` | Service availability | A successful result does not prove project or provider correctness |
 | `/oauth/start/google` | `GET` | Start Google sign-in | Navigate the browser with `project_id`, exact `redirect_uri`, and optional `handoff=1` |
 | `/oauth/start/github` | `GET` | Start GitHub sign-in | Navigate the browser with `project_id`, exact `redirect_uri`, and optional `handoff=1` |
+| `/oauth/start/envx` | `GET` | Start ENVX OIDC sign-in | Navigate the browser with `project_id`, exact `redirect_uri`, and optional `handoff=1` |
 | `/oauth/callback` | `GET` | Provider callback handled by Nexuss Auth | Do not call directly from application code |
 | `/v1/me` | `GET` | Read the current Nexuss Auth identity | Use browser credentials and project context; `user: null` means signed out |
 | `/v1/logout` | `POST` | Clear the Nexuss Auth session | Clear application-local state separately |
@@ -35,6 +36,7 @@ Start OAuth by browser navigation, not by expecting a JSON response:
 
 ```text
 https://nexuss-auth.vercel.app/oauth/start/google?project_id=PROJECT_ID&redirect_uri=ENCODED_CALLBACK
+https://nexuss-auth.vercel.app/oauth/start/envx?project_id=PROJECT_ID&redirect_uri=ENCODED_CALLBACK
 ```
 
 For a cross-site application, add `handoff=1`. Nexuss Auth validates that the project is active and that the requested provider is enabled before checking the exact redirect URI.
@@ -73,7 +75,7 @@ The exchange consumes the handoff record. A replay must fail. The application mu
 
 ## Project management payloads
 
-Create requests require `projectId`, `name`, `homepageUrl`, at least one `allowedRedirectUris` entry, `enabledProviders`, and `status`. `allowedOrigins` should contain the exact application origins. Patch only fields that the task changes. Inspect before patch or delete.
+Create requests require `projectId`, `name`, `homepageUrl`, at least one `allowedRedirectUris` entry, `enabledProviders`, and `status`. Supported providers are `google`, `github`, and `envx`. Optional `requiredProvider` must also appear in `enabledProviders`; `strictCredentials: true` requires server-issued project provenance on sessions and tokens. `allowedOrigins` should contain the exact application origins. Patch only fields that the task changes. Inspect before patch or delete.
 
 ## Status handling
 
