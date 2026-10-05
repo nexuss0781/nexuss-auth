@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { connect, GatewayClient, parseUrl, type ParadConnection } from 'parad';
+import { IdentityLinkRequiredError } from './types.js';
 import type {
   ApiTokenRecord,
   CreateSessionInput,
@@ -27,6 +28,8 @@ const schemaStatements = [
     allowed_redirect_uris TEXT NOT NULL,
     allowed_origins TEXT NOT NULL DEFAULT '[]',
     enabled_providers TEXT NOT NULL DEFAULT '["google","github"]',
+    required_provider TEXT,
+    strict_credentials INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -42,7 +45,9 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS identities (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    provider TEXT NOT NULL CHECK (provider IN ('google', 'github')),
+    provider TEXT NOT NULL CHECK (provider IN ('google', 'github', 'envx')),
+    issuer TEXT,
+    subject TEXT,
     provider_account_id TEXT NOT NULL,
     email TEXT,
     email_verified INTEGER NOT NULL DEFAULT 0,
@@ -53,18 +58,25 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS oauth_states (
     state_hash TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-    provider TEXT NOT NULL CHECK (provider IN ('google', 'github')),
+    provider TEXT NOT NULL CHECK (provider IN ('google', 'github', 'envx')),
     redirect_uri TEXT NOT NULL,
     handoff INTEGER NOT NULL DEFAULT 0,
     user_id TEXT,
     expires_at TEXT NOT NULL,
-    purpose TEXT NOT NULL DEFAULT 'sign_in'
+    purpose TEXT NOT NULL DEFAULT 'sign_in',
+    code_verifier TEXT,
+    nonce TEXT,
+    client_state TEXT
   )`,
   `CREATE TABLE IF NOT EXISTS oauth_handoffs (
     handoff_hash TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     github_grant_token TEXT,
+    provider TEXT,
+    issuer TEXT,
+    subject TEXT,
+    permissions TEXT NOT NULL DEFAULT '[]',
     expires_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS github_connections (
@@ -87,6 +99,7 @@ const schemaStatements = [
     token_hash TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    provider TEXT, issuer TEXT, subject TEXT, permissions TEXT NOT NULL DEFAULT '[]',
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
@@ -98,6 +111,7 @@ const schemaStatements = [
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash TEXT NOT NULL UNIQUE,
     token_prefix TEXT NOT NULL,
+    project_id TEXT, provider TEXT, issuer TEXT, subject TEXT, permissions TEXT NOT NULL DEFAULT '[]',
     label TEXT NOT NULL DEFAULT 'CLI token',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_used_at TEXT,
@@ -120,6 +134,24 @@ const projectMigrationStatements = [
   "ALTER TABLE projects ADD COLUMN allowed_origins TEXT NOT NULL DEFAULT '[]'",
   "ALTER TABLE projects ADD COLUMN enabled_providers TEXT NOT NULL DEFAULT '[\"google\",\"github\"]'",
   "ALTER TABLE projects ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+  "ALTER TABLE projects ADD COLUMN required_provider TEXT",
+  "ALTER TABLE projects ADD COLUMN strict_credentials INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE oauth_states ADD COLUMN code_verifier TEXT",
+  "ALTER TABLE oauth_states ADD COLUMN nonce TEXT",
+  "ALTER TABLE oauth_states ADD COLUMN client_state TEXT",
+  "ALTER TABLE oauth_handoffs ADD COLUMN provider TEXT",
+  "ALTER TABLE oauth_handoffs ADD COLUMN issuer TEXT",
+  "ALTER TABLE oauth_handoffs ADD COLUMN subject TEXT",
+  "ALTER TABLE oauth_handoffs ADD COLUMN permissions TEXT NOT NULL DEFAULT '[]'",
+  "ALTER TABLE sessions ADD COLUMN provider TEXT",
+  "ALTER TABLE sessions ADD COLUMN issuer TEXT",
+  "ALTER TABLE sessions ADD COLUMN subject TEXT",
+  "ALTER TABLE sessions ADD COLUMN permissions TEXT NOT NULL DEFAULT '[]'",
+  "ALTER TABLE api_tokens ADD COLUMN project_id TEXT",
+  "ALTER TABLE api_tokens ADD COLUMN provider TEXT",
+  "ALTER TABLE api_tokens ADD COLUMN issuer TEXT",
+  "ALTER TABLE api_tokens ADD COLUMN subject TEXT",
+  "ALTER TABLE api_tokens ADD COLUMN permissions TEXT NOT NULL DEFAULT '[]'",
 ];
 
 type ParadConfig = {
@@ -143,9 +175,10 @@ function jsonUris(value: string): string[] {
   }
 }
 
-function jsonProviders(value: string): ('google' | 'github')[] {
-  return jsonUris(value).filter((provider): provider is 'google' | 'github' => provider === 'google' || provider === 'github');
+function jsonProviders(value: string): ('google' | 'github' | 'envx')[] {
+  return jsonUris(value).filter((provider): provider is 'google' | 'github' | 'envx' => provider === 'google' || provider === 'github' || provider === 'envx');
 }
+function jsonList(value: string | null | undefined): string[] { return value ? jsonUris(value) : []; }
 
 type ProjectRow = {
   project_id: string;
@@ -157,6 +190,8 @@ type ProjectRow = {
   allowed_redirect_uris: string;
   allowed_origins: string;
   enabled_providers: string;
+  required_provider: 'google' | 'github' | 'envx' | null;
+  strict_credentials: number | boolean;
   status: 'active' | 'disabled';
 };
 
@@ -171,6 +206,8 @@ function projectFromRow(row: ProjectRow): ProjectRecord {
     allowedRedirectUris: jsonUris(row.allowed_redirect_uris),
     allowedOrigins: jsonUris(row.allowed_origins),
     enabledProviders: jsonProviders(row.enabled_providers),
+    requiredProvider: row.required_provider,
+    strictCredentials: Boolean(row.strict_credentials),
     status: row.status === 'disabled' ? 'disabled' : 'active',
   };
 }
@@ -307,13 +344,13 @@ export class ParadoxDatabase implements Database {
 
   async listProjects(ownerUserId?: string): Promise<ProjectRecord[]> {
     return this.run((db) => rows<ProjectRow>(db, ownerUserId
-      ? 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE owner_user_id = ? ORDER BY created_at DESC, project_id ASC'
-      : 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects ORDER BY created_at DESC, project_id ASC', ownerUserId ? [ownerUserId] : []).map(projectFromRow));
+      ? 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, required_provider, strict_credentials, status FROM projects WHERE owner_user_id = ? ORDER BY created_at DESC, project_id ASC'
+      : 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, required_provider, strict_credentials, status FROM projects ORDER BY created_at DESC, project_id ASC', ownerUserId ? [ownerUserId] : []).map(projectFromRow));
   }
 
   async getProject(projectId: string): Promise<ProjectRecord | null> {
     return this.run((db) => {
-      const row = one<ProjectRow>(db, 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status FROM projects WHERE project_id = ?', [projectId]);
+      const row = one<ProjectRow>(db, 'SELECT project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, required_provider, strict_credentials, status FROM projects WHERE project_id = ?', [projectId]);
       return row ? projectFromRow(row) : null;
     });
   }
@@ -321,10 +358,10 @@ export class ParadoxDatabase implements Database {
   async upsertProject(project: ProjectRecord): Promise<ProjectRecord> {
     return this.run((db) => {
       db.execute(
-        `INSERT INTO projects (project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(project_id) DO UPDATE SET owner_user_id = COALESCE(excluded.owner_user_id, projects.owner_user_id), name = excluded.name, homepage_url = excluded.homepage_url, description = excluded.description, avatar_url = excluded.avatar_url, allowed_redirect_uris = excluded.allowed_redirect_uris, allowed_origins = excluded.allowed_origins, enabled_providers = excluded.enabled_providers, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
-        [project.projectId, project.ownerUserId, project.name, project.homepageUrl, project.description, project.avatarUrl, JSON.stringify(project.allowedRedirectUris), JSON.stringify(project.allowedOrigins), JSON.stringify(project.enabledProviders), project.status],
+        `INSERT INTO projects (project_id, owner_user_id, name, homepage_url, description, avatar_url, allowed_redirect_uris, allowed_origins, enabled_providers, required_provider, strict_credentials, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id) DO UPDATE SET owner_user_id = COALESCE(excluded.owner_user_id, projects.owner_user_id), name = excluded.name, homepage_url = excluded.homepage_url, description = excluded.description, avatar_url = excluded.avatar_url, allowed_redirect_uris = excluded.allowed_redirect_uris, allowed_origins = excluded.allowed_origins, enabled_providers = excluded.enabled_providers, required_provider = excluded.required_provider, strict_credentials = excluded.strict_credentials, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
+        [project.projectId, project.ownerUserId, project.name, project.homepageUrl, project.description, project.avatarUrl, JSON.stringify(project.allowedRedirectUris), JSON.stringify(project.allowedOrigins), JSON.stringify(project.enabledProviders), project.requiredProvider ?? null, project.strictCredentials ? 1 : 0, project.status],
       );
       return project;
     }, true);
@@ -338,31 +375,31 @@ export class ParadoxDatabase implements Database {
 
   async createOAuthState(state: OAuthStateRecord): Promise<void> {
     await this.run((db) => {
-      db.execute('INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff ? 1 : 0, state.userId ?? null, iso(state.expiresAt), state.purpose ?? 'sign_in']);
+      db.execute('INSERT INTO oauth_states (state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose, code_verifier, nonce, client_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [state.stateHash, state.projectId, state.provider, state.redirectUri, state.handoff ? 1 : 0, state.userId ?? null, iso(state.expiresAt), state.purpose ?? 'sign_in', state.codeVerifier ?? null, state.nonce ?? null, state.clientState ?? null]);
     }, true);
   }
 
   async consumeOAuthState(stateHash: string): Promise<OAuthStateRecord | null> {
     return this.run((db) => {
-      const row = one<{ state_hash: string; project_id: string; provider: 'google' | 'github'; redirect_uri: string; handoff: number; user_id: string | null; expires_at: string; purpose: 'sign_in' | 'github_authorization' }>(db, 'SELECT state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose FROM oauth_states WHERE state_hash = ?', [stateHash]);
+      const row = one<{ state_hash: string; project_id: string; provider: 'google' | 'github' | 'envx'; redirect_uri: string; handoff: number; user_id: string | null; expires_at: string; purpose: 'sign_in' | 'github_authorization'; code_verifier: string | null; nonce: string | null; client_state: string | null }>(db, 'SELECT state_hash, project_id, provider, redirect_uri, handoff, user_id, expires_at, purpose, code_verifier, nonce, client_state FROM oauth_states WHERE state_hash = ?', [stateHash]);
       if (!row) return null;
       db.execute('DELETE FROM oauth_states WHERE state_hash = ?', [stateHash]);
-      return { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff === 1, userId: row.user_id, purpose: row.purpose || 'sign_in', expiresAt: date(row.expires_at) };
+      return { stateHash: row.state_hash, projectId: row.project_id, provider: row.provider, redirectUri: row.redirect_uri, handoff: row.handoff === 1, userId: row.user_id, purpose: row.purpose || 'sign_in', codeVerifier: row.code_verifier, nonce: row.nonce, clientState: row.client_state, expiresAt: date(row.expires_at) };
     }, true);
   }
 
   async createHandoff(handoff: HandoffRecord): Promise<void> {
     await this.run((db) => {
-      db.execute('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, github_grant_token, expires_at) VALUES (?, ?, ?, ?, ?)', [handoff.handoffHash, handoff.projectId, handoff.userId, handoff.githubGrantToken ?? null, iso(handoff.expiresAt)]);
+      db.execute('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, provider, issuer, subject, permissions, github_grant_token, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [handoff.handoffHash, handoff.projectId, handoff.userId, handoff.provider ?? null, handoff.issuer ?? null, handoff.subject ?? null, JSON.stringify(handoff.permissions ?? []), handoff.githubGrantToken ?? null, iso(handoff.expiresAt)]);
     }, true);
   }
 
   async consumeHandoff(handoffHash: string): Promise<HandoffRecord | null> {
     return this.run((db) => {
-      const row = one<{ handoff_hash: string; project_id: string; user_id: string; github_grant_token: string | null; expires_at: string }>(db, 'SELECT handoff_hash, project_id, user_id, github_grant_token, expires_at FROM oauth_handoffs WHERE handoff_hash = ?', [handoffHash]);
+      const row = one<{ handoff_hash: string; project_id: string; user_id: string; provider: 'google'|'github'|'envx'|null; issuer: string|null; subject: string|null; permissions: string; github_grant_token: string | null; expires_at: string }>(db, 'SELECT handoff_hash, project_id, user_id, provider, issuer, subject, permissions, github_grant_token, expires_at FROM oauth_handoffs WHERE handoff_hash = ?', [handoffHash]);
       if (!row) return null;
       db.execute('DELETE FROM oauth_handoffs WHERE handoff_hash = ?', [handoffHash]);
-      return { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, githubGrantToken: row.github_grant_token, expiresAt: date(row.expires_at) };
+      return { handoffHash: row.handoff_hash, projectId: row.project_id, userId: row.user_id, provider: row.provider, issuer: row.issuer, subject: row.subject, permissions: jsonList(row.permissions), githubGrantToken: row.github_grant_token, expiresAt: date(row.expires_at) };
     }, true);
   }
 
@@ -383,9 +420,9 @@ export class ParadoxDatabase implements Database {
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(user_id) DO UPDATE SET github_account_id = excluded.github_account_id, login = excluded.login, access_token = excluded.access_token, refresh_token = excluded.refresh_token, expires_at = excluded.expires_at, scopes = excluded.scopes, updated_at = excluded.updated_at`, [row.id, input.profile.providerAccountId, input.profile.username || input.profile.name || input.profile.providerAccountId, input.profile.accessToken, input.profile.refreshToken ?? null, input.profile.expiresInSeconds ? iso(new Date(Date.now() + input.profile.expiresInSeconds * 1_000)) : null, JSON.stringify(input.profile.scopes || []), iso(new Date())]);
       }
-      db.execute('INSERT INTO sessions (token_hash, user_id, project_id, expires_at) VALUES (?, ?, ?, ?)', [input.sessionTokenHash, row.id, input.state.projectId, iso(input.sessionExpiresAt)]);
+      db.execute('INSERT INTO sessions (token_hash, user_id, project_id, provider, issuer, subject, permissions, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [input.sessionTokenHash, row.id, input.state.projectId, input.profile.provider, input.profile.issuer ?? null, input.profile.subject ?? input.profile.providerAccountId, JSON.stringify(input.profile.permissions ?? []), iso(input.sessionExpiresAt)]);
       if (input.githubGrantHash && input.githubGrantExpiresAt) db.execute('INSERT INTO github_grants (grant_hash, project_id, user_id, expires_at) VALUES (?, ?, ?, ?)', [input.githubGrantHash, input.state.projectId, row.id, iso(input.githubGrantExpiresAt)]);
-      if (input.handoffHash && input.handoffExpiresAt) db.execute('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, github_grant_token, expires_at) VALUES (?, ?, ?, ?, ?)', [input.handoffHash, input.state.projectId, row.id, input.githubGrantToken ?? null, iso(input.handoffExpiresAt)]);
+      if (input.handoffHash && input.handoffExpiresAt) db.execute('INSERT INTO oauth_handoffs (handoff_hash, project_id, user_id, provider, issuer, subject, permissions, github_grant_token, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [input.handoffHash, input.state.projectId, row.id, input.profile.provider, input.profile.issuer ?? null, input.profile.subject ?? input.profile.providerAccountId, JSON.stringify(input.profile.permissions ?? []), input.githubGrantToken ?? null, iso(input.handoffExpiresAt)]);
       return { user: { id: row.id, email: row.email, name: row.name, avatarUrl: row.avatar_url } };
     });
   }
@@ -418,7 +455,11 @@ export class ParadoxDatabase implements Database {
       const safeEmail = profile.emailVerified ? profile.email : null;
       const identity = one<{ user_id: string }>(db, 'SELECT user_id FROM identities WHERE provider = ? AND provider_account_id = ?', [profile.provider, profile.providerAccountId]);
       let userId = identity?.user_id;
-      if (!userId && safeEmail) userId = one<{ id: string }>(db, 'SELECT id FROM users WHERE lower(email) = lower(?) LIMIT 1', [safeEmail])?.id;
+      if (!userId && safeEmail) {
+        const existingUser = one<{ id: string }>(db, 'SELECT id FROM users WHERE lower(email) = lower(?) LIMIT 1', [safeEmail]);
+        if (profile.provider === 'envx' && existingUser) throw new IdentityLinkRequiredError();
+        userId = existingUser?.id;
+      }
       if (!userId) {
         userId = randomUUID();
         db.execute('INSERT INTO users (id, email, name, avatar_url) VALUES (?, ?, ?, ?)', [userId, safeEmail, profile.name, profile.avatarUrl]);
@@ -426,9 +467,9 @@ export class ParadoxDatabase implements Database {
         db.execute('UPDATE users SET email = COALESCE(?, email), name = COALESCE(?, name), avatar_url = COALESCE(?, avatar_url), updated_at = CURRENT_TIMESTAMP WHERE id = ?', [safeEmail, profile.name, profile.avatarUrl, userId]);
       }
       db.execute(
-        `INSERT INTO identities (id, user_id, provider, provider_account_id, email, email_verified) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(provider, provider_account_id) DO UPDATE SET email = excluded.email, email_verified = excluded.email_verified, updated_at = CURRENT_TIMESTAMP`,
-        [randomUUID(), userId, profile.provider, profile.providerAccountId, safeEmail, profile.emailVerified ? 1 : 0],
+        `INSERT INTO identities (id, user_id, provider, issuer, subject, provider_account_id, email, email_verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(provider, provider_account_id) DO UPDATE SET issuer = excluded.issuer, subject = excluded.subject, email = excluded.email, email_verified = excluded.email_verified, updated_at = CURRENT_TIMESTAMP`,
+        [randomUUID(), userId, profile.provider, profile.issuer ?? null, profile.subject ?? null, profile.providerAccountId, safeEmail, profile.emailVerified ? 1 : 0],
       );
       const row = one<{ id: string; email: string | null; name: string | null; avatar_url: string | null }>(db, 'SELECT id, email, name, avatar_url FROM users WHERE id = ?', [userId]);
       if (!row) throw new Error('User disappeared after creation');
@@ -438,14 +479,14 @@ export class ParadoxDatabase implements Database {
 
   async createSession(input: CreateSessionInput): Promise<void> {
     await this.run((db) => {
-      db.execute('INSERT INTO sessions (token_hash, user_id, project_id, expires_at) VALUES (?, ?, ?, ?)', [input.tokenHash, input.userId, input.projectId, iso(input.expiresAt)]);
+      db.execute('INSERT INTO sessions (token_hash, user_id, project_id, provider, issuer, subject, permissions, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [input.tokenHash, input.userId, input.projectId, input.provider ?? null, input.issuer ?? null, input.subject ?? null, JSON.stringify(input.permissions ?? []), iso(input.expiresAt)]);
     }, true);
   }
 
   async getSession(tokenHash: string): Promise<SessionRecord | null> {
     return this.run((db) => {
-      const row = one<{ token_hash: string; user_id: string; project_id: string; expires_at: string }>(db, 'SELECT token_hash, user_id, project_id, expires_at FROM sessions WHERE token_hash = ? AND expires_at > ?', [tokenHash, iso(new Date())]);
-      return row ? { tokenHash: row.token_hash, userId: row.user_id, projectId: row.project_id, expiresAt: date(row.expires_at) } : null;
+      const row = one<{ token_hash: string; user_id: string; project_id: string; provider: 'google'|'github'|'envx'|null; issuer: string|null; subject: string|null; permissions: string; expires_at: string }>(db, 'SELECT token_hash, user_id, project_id, provider, issuer, subject, permissions, expires_at FROM sessions WHERE token_hash = ? AND expires_at > ?', [tokenHash, iso(new Date())]);
+      return row ? { tokenHash: row.token_hash, userId: row.user_id, projectId: row.project_id, provider: row.provider, issuer: row.issuer, subject: row.subject, permissions: jsonList(row.permissions), expiresAt: date(row.expires_at) } : null;
     });
   }
 
@@ -464,18 +505,18 @@ export class ParadoxDatabase implements Database {
 
   async createApiToken(token: ApiTokenRecord): Promise<void> {
     await this.run((db) => {
-      db.execute('INSERT INTO api_tokens (token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [token.tokenId, token.userId, token.tokenHash, token.tokenPrefix, token.label, iso(token.createdAt), token.lastUsedAt ? iso(token.lastUsedAt) : null, token.revokedAt ? iso(token.revokedAt) : null]);
+      db.execute('INSERT INTO api_tokens (token_id, user_id, token_hash, token_prefix, project_id, provider, issuer, subject, permissions, label, created_at, last_used_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [token.tokenId, token.userId, token.tokenHash, token.tokenPrefix, token.projectId ?? null, token.provider ?? null, token.issuer ?? null, token.subject ?? null, JSON.stringify(token.permissions ?? []), token.label, iso(token.createdAt), token.lastUsedAt ? iso(token.lastUsedAt) : null, token.revokedAt ? iso(token.revokedAt) : null]);
     }, true);
   }
 
   async listApiTokens(userId: string): Promise<ApiTokenRecord[]> {
-    return this.run((db) => rows<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; label: string; created_at: string; last_used_at: string | null; revoked_at: string | null }>(db, 'SELECT token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC', [userId]).map((row) => ({ tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, label: row.label, createdAt: date(row.created_at), lastUsedAt: row.last_used_at ? date(row.last_used_at) : null, revokedAt: row.revoked_at ? date(row.revoked_at) : null })));
+    return this.run((db) => rows<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; project_id: string|null; provider: 'google'|'github'|'envx'|null; issuer: string|null; subject: string|null; permissions: string; label: string; created_at: string; last_used_at: string | null; revoked_at: string | null }>(db, 'SELECT token_id, user_id, token_hash, token_prefix, project_id, provider, issuer, subject, permissions, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC', [userId]).map((row) => ({ tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, projectId: row.project_id, provider: row.provider, issuer: row.issuer, subject: row.subject, permissions: jsonList(row.permissions), label: row.label, createdAt: date(row.created_at), lastUsedAt: row.last_used_at ? date(row.last_used_at) : null, revokedAt: row.revoked_at ? date(row.revoked_at) : null })));
   }
 
   async getApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null> {
     return this.run((db) => {
-      const row = one<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; label: string; created_at: string; last_used_at: string | null; revoked_at: string | null }>(db, 'SELECT token_id, user_id, token_hash, token_prefix, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL', [tokenHash]);
-      return row ? { tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, label: row.label, createdAt: date(row.created_at), lastUsedAt: row.last_used_at ? date(row.last_used_at) : null, revokedAt: row.revoked_at ? date(row.revoked_at) : null } : null;
+      const row = one<{ token_id: string; user_id: string; token_hash: string; token_prefix: string; project_id: string|null; provider: 'google'|'github'|'envx'|null; issuer: string|null; subject: string|null; permissions: string; label: string; created_at: string; last_used_at: string | null; revoked_at: string | null }>(db, 'SELECT token_id, user_id, token_hash, token_prefix, project_id, provider, issuer, subject, permissions, label, created_at, last_used_at, revoked_at FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL', [tokenHash]);
+      return row ? { tokenId: row.token_id, userId: row.user_id, tokenHash: row.token_hash, tokenPrefix: row.token_prefix, projectId: row.project_id, provider: row.provider, issuer: row.issuer, subject: row.subject, permissions: jsonList(row.permissions), label: row.label, createdAt: date(row.created_at), lastUsedAt: row.last_used_at ? date(row.last_used_at) : null, revokedAt: row.revoked_at ? date(row.revoked_at) : null } : null;
     });
   }
 

@@ -1,4 +1,4 @@
-export type Provider = 'google' | 'github';
+export type Provider = 'google' | 'github' | 'envx';
 export type ProjectStatus = 'active' | 'disabled';
 
 export interface ManagedUser {
@@ -27,6 +27,8 @@ export interface ManagedProject {
   allowedOrigins: string[];
   enabledProviders: Provider[];
   status: ProjectStatus;
+  requiredProvider?: Provider | null;
+  strictCredentials?: boolean;
 }
 
 export class ManagementError extends Error {

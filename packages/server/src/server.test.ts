@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { hashToken } from './crypto.js';
+import { PostgresDatabase } from './db.js';
 import { createAuthApp } from './server.js';
+import { IdentityLinkRequiredError } from './types.js';
 import type { ApiTokenRecord, Database, GithubConnectionRecord, GithubGrantRecord, HandoffRecord, OAuthFinalizationInput, OAuthFinalizationResult, OAuthProfile, OAuthStateRecord, ProjectRecord, SessionRecord, UserRecord } from './types.js';
 
 class MemoryDatabase implements Database {
@@ -46,6 +50,7 @@ class MemoryDatabase implements Database {
   async createGithubGrant(grant: GithubGrantRecord): Promise<void> { this.githubGrants.set(grant.grantHash, grant); }
   async getGithubGrant(grantHash: string): Promise<GithubGrantRecord | null> { return this.githubGrants.get(grantHash) ?? null; }
   async findOrCreateUser(profile: OAuthProfile): Promise<UserRecord> {
+    if (profile.provider === 'envx' && profile.emailVerified && profile.email && [...this.users.values()].some((user) => user.email?.toLowerCase() === profile.email?.toLowerCase())) throw new IdentityLinkRequiredError();
     const user = { id: 'u1', email: profile.email, name: profile.name, avatarUrl: profile.avatarUrl };
     this.users.set(user.id, user);
     return user;
@@ -268,6 +273,12 @@ test('admin can list and update provider configuration for a project', async () 
   }));
   assert.equal(updated.status, 200);
   assert.deepEqual((await updated.json()).enabledProviders, ['github']);
+  const inconsistentPolicy = await app.fetch(new Request('https://auth.example.com/v1/projects/demo', {
+    method: 'PATCH',
+    headers: { authorization: 'Bearer admin-secret', 'content-type': 'application/json' },
+    body: JSON.stringify({ requiredProvider: 'envx' }),
+  }));
+  assert.equal(inconsistentPolicy.status, 400);
   const rejected = await app.fetch(new Request('https://auth.example.com/oauth/start/google?project_id=demo&redirect_uri=https%3A%2F%2Fdemo.example.com%2Flogin'));
   assert.equal(rejected.status, 400);
 });
@@ -288,6 +299,16 @@ test('an authenticated user can manage only their own projects without an admin 
     headers: { cookie: 'nex_auth_session=owner-session' },
   }));
   assert.equal(forbidden.status, 404);
+  const policy = await app.fetch(new Request('https://auth.example.com/v1/projects/demo', {
+    method: 'PATCH',
+    headers: { cookie: 'nex_auth_session=owner-session', 'content-type': 'application/json' },
+    body: JSON.stringify({ enabledProviders: ['envx'], requiredProvider: 'envx', strictCredentials: true, allowedRedirectUris: ['https://paradox-db.wasmer.app/v1/auth/nexuss/callback'], allowedOrigins: ['https://paradox-db.wasmer.app'] }),
+  }));
+  assert.equal(policy.status, 200);
+  const policyProject = await policy.json() as ProjectRecord;
+  assert.deepEqual(policyProject.enabledProviders, ['envx']);
+  assert.equal(policyProject.requiredProvider, 'envx');
+  assert.equal(policyProject.strictCredentials, true);
 });
 
 
@@ -416,4 +437,299 @@ test('GitHub repository management is owner-scoped and requires delete confirmat
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+
+type EnvxFlowOverrides = {
+  tokenIssuer?: string;
+  tokenAudience?: string;
+  tokenNonce?: string;
+  emailVerified?: boolean;
+  includeExpiration?: boolean;
+  preexistingAccount?: boolean;
+  callbackState?: string;
+};
+
+async function runEnvxFlow(overrides: EnvxFlowOverrides = {}) {
+  const issuer = `https://envx-${randomUUID()}.example/auth/v1`;
+  const discoveryUrl = `${issuer}/.well-known/openid-configuration`;
+  const authorizationEndpoint = `${issuer}/oauth/authorize`;
+  const tokenEndpoint = `${issuer}/oauth/token`;
+  const jwksUri = `${issuer}/.well-known/jwks.json`;
+  const clientId = 'test-envx-client';
+  const projectId = 'paradox';
+  const callbackUrl = 'https://paradox.example.com/v1/auth/nexuss/callback';
+  const clientState = randomUUID().replace(/-/g, '');
+  const envxConfig = { ...config, envxOidcIssuerUrl: issuer, envxOidcClientId: clientId, envxOidcClientSecret: 'test-only-secret' };
+  const db = new MemoryDatabase();
+  await db.upsertProject({
+    ...demoProject,
+    projectId,
+    name: 'Paradox',
+    homepageUrl: 'https://paradox.example.com',
+    allowedRedirectUris: [callbackUrl],
+    allowedOrigins: ['https://paradox.example.com'],
+    enabledProviders: ['envx'],
+    requiredProvider: 'envx',
+    strictCredentials: true,
+  });
+  if (overrides.preexistingAccount) db.users.set('existing-google-user', { id: 'existing-google-user', email: 'owner@example.com', name: 'Existing Google user', avatarUrl: null });
+  const { privateKey, publicKey } = await generateKeyPair('ES256');
+  const keyId = randomUUID();
+  const publicJwk = await exportJWK(publicKey);
+  publicJwk.kid = keyId;
+  publicJwk.alg = 'ES256';
+  publicJwk.use = 'sig';
+  let idToken = '';
+  let tokenRequestBody = '';
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestedUrl = String(input);
+    if (requestedUrl === discoveryUrl) return new Response(JSON.stringify({
+      issuer,
+      authorization_endpoint: authorizationEndpoint,
+      token_endpoint: tokenEndpoint,
+      jwks_uri: jwksUri,
+      response_types_supported: ['code'],
+      subject_types_supported: ['public'],
+      id_token_signing_alg_values_supported: ['ES256'],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (requestedUrl === tokenEndpoint && init?.method === 'POST') {
+      tokenRequestBody = init.body instanceof URLSearchParams ? init.body.toString() : typeof init.body === 'string' ? init.body : '';
+      return new Response(JSON.stringify({ id_token: idToken, token_type: 'Bearer', expires_in: 300 }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (requestedUrl === jwksUri) return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    throw new Error(`Unexpected ENVX OIDC request: ${requestedUrl}`);
+  };
+  try {
+    const app = createAuthApp(envxConfig, db);
+    const startUrl = new URL('https://auth.example.com/oauth/start/envx');
+    startUrl.searchParams.set('project_id', projectId);
+    startUrl.searchParams.set('redirect_uri', callbackUrl);
+    startUrl.searchParams.set('handoff', '1');
+    startUrl.searchParams.set('client_state', clientState);
+    const startResponse = await app.fetch(new Request(startUrl));
+    assert.equal(startResponse.status, 302);
+    const authorizeUrl = new URL(startResponse.headers.get('location') ?? '');
+    const oauthState = authorizeUrl.searchParams.get('state');
+    const oauthNonce = authorizeUrl.searchParams.get('nonce');
+    assert.ok(oauthState);
+    assert.ok(oauthNonce);
+    assert.equal(authorizeUrl.searchParams.get('code_challenge_method'), 'S256');
+    const stateRecord = db.states.get(hashToken(oauthState));
+    assert.ok(stateRecord?.codeVerifier);
+    assert.equal(authorizeUrl.searchParams.get('code_challenge'), createHash('sha256').update(stateRecord.codeVerifier).digest('base64url'));
+    assert.equal(stateRecord?.nonce, oauthNonce);
+    assert.equal(stateRecord?.clientState, clientState);
+
+    const claims = {
+      email: 'owner@example.com',
+      email_verified: overrides.emailVerified ?? true,
+      name: 'ENVX Owner',
+      nonce: overrides.tokenNonce ?? oauthNonce,
+    };
+    let token = new SignJWT(claims)
+      .setProtectedHeader({ alg: 'ES256', kid: keyId })
+      .setIssuer(overrides.tokenIssuer ?? issuer)
+      .setAudience(overrides.tokenAudience ?? clientId)
+      .setSubject('envx-stable-subject-123')
+      .setIssuedAt();
+    if (overrides.includeExpiration !== false) token = token.setExpirationTime('5m');
+    idToken = await token.sign(privateKey);
+
+    const callbackUrlWithState = new URL('https://auth.example.com/oauth/callback');
+    callbackUrlWithState.searchParams.set('code', 'test-authorization-code');
+    callbackUrlWithState.searchParams.set('state', overrides.callbackState ?? oauthState);
+    const callbackResponse = await app.fetch(new Request(callbackUrlWithState));
+    const callbackHtml = await callbackResponse.text();
+    return { app, db, callbackResponse, callbackHtml, clientState, projectId, envxConfig, tokenRequestBody, stateRecord, oauthState };
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+test('ENVX OIDC uses PKCE, state, nonce, signed stable subject, and server-issued project permission', async () => {
+  const flow = await runEnvxFlow();
+  assert.equal(flow.callbackResponse.status, 200);
+  assert.equal(flow.callbackResponse.headers.get('location'), null);
+  assert.match(flow.callbackResponse.headers.get('content-security-policy') ?? '', /form-action https:\/\/paradox\.example\.com/);
+  assert.equal(new URLSearchParams(flow.tokenRequestBody).get('code_verifier'), flow.stateRecord?.codeVerifier);
+  assert.match(flow.callbackHtml, /name="client_state"/);
+  assert.match(flow.callbackHtml, new RegExp(`value="${flow.clientState}"`));
+  const tokenMatch = flow.callbackHtml.match(/name="handoff_token" value="([^"]+)"/);
+  assert.ok(tokenMatch?.[1]);
+  const handoff = [...flow.db.handoffs.values()][0];
+  assert.equal(handoff?.projectId, flow.projectId);
+  assert.equal(handoff?.provider, 'envx');
+  assert.equal(handoff?.issuer, flow.envxConfig.envxOidcIssuerUrl);
+  assert.equal(handoff?.subject, 'envx-stable-subject-123');
+  assert.deepEqual(handoff?.permissions, ['project:paradox:access']);
+
+  const cookie = flow.callbackResponse.headers.get('set-cookie')?.split(';', 1)[0];
+  assert.ok(cookie?.startsWith('nex_auth_session='));
+  const me = await flow.app.fetch(new Request('https://auth.example.com/v1/me?project_id=paradox', {
+    headers: { cookie: cookie!, origin: 'https://paradox.example.com', 'x-nex-auth-project': 'paradox' },
+  }));
+  assert.equal(me.status, 200);
+  const mePayload = await me.json() as { auth: { provider: string; issuer: string; subject: string; permissions: string[] } };
+  assert.equal(mePayload.auth.provider, 'envx');
+  assert.equal(mePayload.auth.subject, 'envx-stable-subject-123');
+  assert.deepEqual(mePayload.auth.permissions, ['project:paradox:access']);
+
+  const minted = await flow.app.fetch(new Request('https://auth.example.com/v1/tokens?project_id=paradox', {
+    method: 'POST', headers: { cookie: cookie!, origin: 'https://paradox.example.com', 'content-type': 'application/json' },
+    body: JSON.stringify({ label: 'Paradox test token' }),
+  }));
+  assert.equal(minted.status, 201);
+  const mintedPayload = await minted.json() as { token: string };
+  const storedToken = await flow.db.getApiTokenByHash(hashToken(mintedPayload.token));
+  assert.equal(storedToken?.projectId, 'paradox');
+  assert.equal(storedToken?.provider, 'envx');
+  assert.equal(storedToken?.subject, 'envx-stable-subject-123');
+  assert.deepEqual(storedToken?.permissions, ['project:paradox:access']);
+  const tokenMe = await flow.app.fetch(new Request('https://auth.example.com/v1/me?project_id=paradox', {
+    headers: { authorization: `Bearer ${mintedPayload.token}`, 'x-nex-auth-project': 'paradox' },
+  }));
+  assert.equal(tokenMe.status, 200);
+  await flow.db.upsertProject({ ...demoProject, projectId: 'other-project', name: 'Other project' });
+  const crossProjectMe = await flow.app.fetch(new Request('https://auth.example.com/v1/me?project_id=other-project', {
+    headers: { authorization: `Bearer ${mintedPayload.token}`, 'x-nex-auth-project': 'other-project' },
+  }));
+  assert.equal(crossProjectMe.status, 403);
+
+  const accountWideToken = `nxa_${randomUUID()}`;
+  await flow.db.createApiToken({ tokenId: 'account-wide', userId: 'u1', tokenHash: hashToken(accountWideToken), tokenPrefix: accountWideToken.slice(0, 12), label: 'legacy account token', projectId: null, provider: 'envx', issuer: flow.envxConfig.envxOidcIssuerUrl!, subject: 'envx-stable-subject-123', permissions: [], createdAt: new Date(), lastUsedAt: null, revokedAt: null });
+  const accountWideMe = await flow.app.fetch(new Request('https://auth.example.com/v1/me?project_id=paradox', {
+    headers: { authorization: `Bearer ${accountWideToken}`, 'x-nex-auth-project': 'paradox' },
+  }));
+  assert.equal(accountWideMe.status, 403);
+
+  const exchanged = await flow.app.fetch(new Request('https://auth.example.com/v1/handoff/exchange', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ projectId: 'paradox', handoffToken: tokenMatch![1] }),
+  }));
+  assert.equal(exchanged.status, 200);
+  const exchangedPayload = await exchanged.json() as { auth: { provider: string; projectId: string; subject: string; permissions: string[] } };
+  assert.equal(exchangedPayload.auth.provider, 'envx');
+  assert.equal(exchangedPayload.auth.projectId, 'paradox');
+  assert.equal(exchangedPayload.auth.subject, 'envx-stable-subject-123');
+  assert.deepEqual(exchangedPayload.auth.permissions, ['project:paradox:access']);
+  const replay = await flow.app.fetch(new Request('https://auth.example.com/v1/handoff/exchange', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ projectId: 'paradox', handoffToken: tokenMatch![1] }),
+  }));
+  assert.equal(replay.status, 401);
+});
+
+test('ENVX OIDC rejects invalid issuer, audience, nonce, unverified email, and missing expiry', async (t) => {
+  const cases: Array<[string, EnvxFlowOverrides]> = [
+    ['issuer mismatch', { tokenIssuer: 'https://wrong-issuer.example/auth/v1' }],
+    ['audience mismatch', { tokenAudience: 'wrong-client' }],
+    ['nonce mismatch', { tokenNonce: 'wrong-nonce' }],
+    ['unverified email', { emailVerified: false }],
+    ['missing expiration', { includeExpiration: false }],
+  ];
+  for (const [name, overrides] of cases) {
+    await t.test(name, async () => {
+      const flow = await runEnvxFlow(overrides);
+      assert.equal(flow.callbackResponse.status, 500);
+      assert.equal(flow.db.sessions.size, 0);
+      assert.equal(flow.db.handoffs.size, 0);
+    });
+  }
+});
+
+test('ENVX OIDC rejects callback-state tampering and one-time state replay', async () => {
+  const tampered = await runEnvxFlow({ callbackState: 'attacker-controlled-state' });
+  assert.equal(tampered.callbackResponse.status, 400);
+  assert.equal(tampered.db.sessions.size, 0);
+  assert.equal(tampered.db.handoffs.size, 0);
+
+  const flow = await runEnvxFlow();
+  assert.equal(flow.callbackResponse.status, 200);
+  const replay = await flow.app.fetch(new Request(`https://auth.example.com/oauth/callback?code=again&state=${encodeURIComponent(flow.oauthState)}`));
+  assert.equal(replay.status, 400);
+  assert.equal(flow.db.sessions.size, 1);
+});
+
+test('strict ENVX project does not start Google sign-in', async () => {
+  const db = new MemoryDatabase();
+  await db.upsertProject({ ...demoProject, projectId: 'paradox', enabledProviders: ['google', 'envx'], requiredProvider: 'envx', strictCredentials: true });
+  const app = createAuthApp({ ...config, envxOidcIssuerUrl: 'https://envx.example/auth/v1', envxOidcClientId: 'client', envxOidcClientSecret: 'test-only-secret' }, db);
+  const response = await app.fetch(new Request('https://auth.example.com/oauth/start/google?project_id=paradox&redirect_uri=https%3A%2F%2Fdemo.example.com%2Flogin'));
+  assert.equal(response.status, 403);
+  assert.equal(db.states.size, 0);
+});
+
+test('ENVX does not silently merge into an existing provider account by email', async () => {
+  const flow = await runEnvxFlow({ preexistingAccount: true });
+  assert.equal(flow.callbackResponse.status, 409);
+  assert.match(flow.callbackHtml, /explicitly linked/);
+  assert.equal(flow.db.sessions.size, 0);
+  assert.equal(flow.db.handoffs.size, 0);
+});
+
+
+test('Postgres identity persistence stores issuer and stable subject and requires explicit ENVX linking', async () => {
+  const queryLog: Array<{ sql: string; values: unknown[] }> = [];
+  let existingEmailUser: { id: string } | null = null;
+  const client = {
+    async query(sql: string, values: unknown[] = []) {
+      queryLog.push({ sql, values });
+      if (sql.includes('SELECT user_id FROM identities')) return { rows: [] };
+      if (sql.includes('SELECT id FROM users WHERE lower(email)')) return { rows: existingEmailUser ? [existingEmailUser] : [] };
+      if (sql.startsWith('INSERT INTO users')) return { rows: [{ id: 'new-envx-user' }] };
+      if (sql.startsWith('SELECT id, email, name, avatar_url FROM users')) return { rows: [{ id: 'new-envx-user', email: 'owner@example.com', name: 'Owner', avatar_url: null }] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const database = new PostgresDatabase('postgres://test:test@127.0.0.1:5432/test');
+  Object.assign(database, { pool: { connect: async () => client, query: client.query.bind(client), end: async () => {} } });
+  const profile: OAuthProfile = {
+    provider: 'envx', providerAccountId: 'https://envx.example/auth/v1|stable-sub-1',
+    issuer: 'https://envx.example/auth/v1', subject: 'stable-sub-1',
+    email: 'owner@example.com', emailVerified: true, name: 'Owner', avatarUrl: null, username: null,
+  };
+  await database.findOrCreateUser(profile);
+  const identityInsert = queryLog.find(({ sql }) => sql.includes('INSERT INTO identities'));
+  assert.ok(identityInsert);
+  assert.match(identityInsert.sql, /issuer, subject, provider_account_id/);
+  assert.deepEqual(identityInsert.values, ['new-envx-user', 'envx', profile.issuer, profile.subject, profile.providerAccountId, profile.email, true]);
+
+  existingEmailUser = { id: 'existing-google-user' };
+  await assert.rejects(database.findOrCreateUser(profile), IdentityLinkRequiredError);
+  assert.ok(queryLog.some(({ sql }) => sql === 'ROLLBACK'));
+  assert.equal(queryLog.filter(({ sql }) => sql.includes('INSERT INTO identities')).length, 1);
+  await database.close();
+});
+
+test('Postgres one-time handoff round-trips ENVX issuer, subject, and project permission', async () => {
+  const queryLog: Array<{ sql: string; values: unknown[] }> = [];
+  const row = {
+    handoff_hash: 'hash', project_id: 'paradox', user_id: 'user-1', provider: 'envx',
+    issuer: 'https://envx.example/auth/v1', subject: 'stable-sub-1',
+    permissions: ['project:paradox:access'], github_grant_token: null, expires_at: new Date('2030-01-01T00:00:00Z'),
+  };
+  const client = {
+    async query(sql: string, values: unknown[] = []) {
+      queryLog.push({ sql, values });
+      return { rows: sql.includes('DELETE FROM oauth_handoffs') ? [row] : [] };
+    },
+    release() {},
+  };
+  const database = new PostgresDatabase('postgres://test:test@127.0.0.1:5432/test');
+  Object.assign(database, { pool: { connect: async () => client, query: client.query.bind(client), end: async () => {} } });
+  const expiresAt = new Date('2030-01-01T00:00:00Z');
+  await database.createHandoff({ handoffHash: 'hash', projectId: 'paradox', userId: 'user-1', provider: 'envx', issuer: row.issuer, subject: row.subject, permissions: ['project:paradox:access'], expiresAt });
+  const inserted = queryLog.find(({ sql }) => sql.startsWith('INSERT INTO oauth_handoffs'));
+  assert.ok(inserted);
+  assert.match(inserted.sql, /provider, issuer, subject, permissions/);
+  assert.deepEqual(inserted.values, ['hash', 'paradox', 'user-1', 'envx', row.issuer, row.subject, JSON.stringify(['project:paradox:access']), null, expiresAt]);
+  const handoff = await database.consumeHandoff('hash');
+  assert.equal(handoff?.provider, 'envx');
+  assert.equal(handoff?.issuer, row.issuer);
+  assert.equal(handoff?.subject, row.subject);
+  assert.deepEqual(handoff?.permissions, ['project:paradox:access']);
+  await database.close();
 });

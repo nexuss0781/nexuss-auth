@@ -1,7 +1,7 @@
 {
   "name": "nexuss-auth",
   "version": "1.0.0",
-  "description": "Framework-agnostic browser SDK for Nex-auth unified Google and GitHub login",
+  "description": "Framework-agnostic browser SDK for Nex-auth Google, GitHub, and ENVX OIDC login",
   "license": "MIT",
   "repository": {
     "type": "git",

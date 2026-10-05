@@ -26,7 +26,7 @@ nexuss --json project show --id <project-id>
 
 | Access mode | Command | Use when |
 |---|---|---|
-| Browser CLI session | `nexuss login [--provider google|github]` | Interactive authorization is available or token administration is required |
+| Browser CLI session | `nexuss login [--provider google|github|envx]` | Interactive authorization is available or token administration is required |
 | Existing project token | `nexuss token use --value nxa_<token>` | The task supplies an authorized project-scoped token; no browser login is needed |
 | Protected admin workflow | Do not use this CLI path | Use [`AUTOMATION.md`](./AUTOMATION.md) instead |
 
@@ -76,7 +76,8 @@ nexuss --json project create \
   --home https://app.example.com/ \
   --redirect https://app.example.com/auth/callback \
   --provider google \
-  --provider github
+  --provider github \
+  --provider envx
 ```
 
 | Command | Effect | Agent rule |

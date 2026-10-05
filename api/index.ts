@@ -30,6 +30,9 @@ function config(): ServerConfig {
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
     githubClientId: process.env.GITHUB_CLIENT_ID || '',
     githubClientSecret: process.env.GITHUB_CLIENT_SECRET || '',
+    envxOidcIssuerUrl: process.env.ENVX_OIDC_ISSUER_URL || '',
+    envxOidcClientId: process.env.ENVX_OIDC_CLIENT_ID || '',
+    envxOidcClientSecret: process.env.ENVX_OIDC_CLIENT_SECRET || '',
     oauthRequestTimeoutMs: Number(process.env.NEX_AUTH_OAUTH_REQUEST_TIMEOUT_MS || 15_000),
   };
 }

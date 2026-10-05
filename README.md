@@ -1,6 +1,6 @@
 # Nex-auth
 
-Nex-auth is a centralized authentication service and TypeScript SDK for adding **Continue with Google** and **Continue with GitHub** to multiple applications. Each application registers a project and uses the same auth service, while OAuth client secrets and user sessions remain on the server.
+Nex-auth is a centralized authentication service and TypeScript SDK for **Continue with Google**, **Continue with GitHub**, and **Continue with ENVX** (OIDC) across multiple applications. Each application registers a project and uses the same auth service, while upstream provider credentials and user sessions remain on the server.
 
 > The npm package is an SDK, not a place to store OAuth secrets. The server is the identity authority; the SDK only starts redirects and reads the authenticated session.
 
@@ -8,7 +8,7 @@ Nex-auth is a centralized authentication service and TypeScript SDK for adding *
 
 | Path | Purpose |
 |---|---|
-| `packages/server` | Central OAuth callback service, PostgreSQL persistence, project allowlists, and secure session cookies. |
+| `packages/server` | Central OAuth/OIDC callback service, PostgreSQL and Paradox persistence adapters, project allowlists, and secure session cookies. |
 | `packages/sdk` | Framework-agnostic browser SDK published as `nexuss-auth`. |
 | `apps/dashboard` | Static Nexuss-auth Control Plane dashboard for owner-managed projects. |
 | `packages/server/sql/schema.sql` | PostgreSQL schema for projects, users, identities, OAuth state, and sessions. |
@@ -46,9 +46,9 @@ Set the OAuth callback URL in both provider dashboards to:
 https://auth.example.com/oauth/callback
 ```
 
-The callback is centralized: every application sends Google or GitHub to Nex-auth, and Nex-auth sends the user back to the application redirect URI registered for that project.
+The callback is centralized: applications send Google, GitHub, or ENVX to Nex-auth, which validates the upstream identity and sends the user back to that project's exact registered redirect URI.
 
-Google should be configured with the `openid`, `email`, and `profile` scopes. GitHub should be configured with `read:user` and `user:email` scopes. Never commit provider secrets or the admin token.
+Google should be configured with the `openid`, `email`, and `profile` scopes. GitHub should be configured with `read:user` and `user:email` scopes. ENVX should use its existing Supabase Auth OAuth Server project with an exact Nex-auth callback, an asymmetric JWT signing key, and the `openid email profile` scopes. Never commit provider secrets or the admin token.
 
 ## Register an application project
 
@@ -118,6 +118,9 @@ const auth = createAuth({
 (document.querySelector('#github') as HTMLButtonElement).onclick = () => auth.signInWithGitHub({
   redirectUri: 'https://dashboard.example.com/auth/callback',
 });
+(document.querySelector('#envx') as HTMLButtonElement).onclick = () => auth.signInWithEnvx({
+  redirectUri: 'https://dashboard.example.com/auth/callback',
+});
 
 const user = await auth.getUser();
 if (user) console.log(`Signed in as ${user.name ?? user.email ?? user.id}`);
@@ -146,24 +149,21 @@ This initial version intentionally keeps the persistence contract separate from 
 
 ## Vercel deployment with Paradox-db
 
-The Vercel deployment uses the existing Paradox-db gateway as the persistent store. It does not create PostgreSQL or a new database. A warm serverless instance keeps one encrypted database connection in memory, explicitly pulls the remote snapshot before initialization and before writes, never uploads snapshots for read-only requests, and pushes only after successful mutations. If the remote snapshot cannot be loaded, the handler fails closed instead of serving an empty database.
+The Vercel deployment uses the existing Paradox-db gateway as the persistent store. It does not create PostgreSQL or a new database. Configure the canonical secret-bearing `DATABASE_URL` using the `parad://` format expected by the adapter (not a raw PostgreSQL URL). A warm serverless instance keeps one encrypted database connection in memory, explicitly pulls the remote snapshot before initialization and before writes, never uploads snapshots for read-only requests, and pushes only after successful mutations. If the remote snapshot cannot be loaded, the handler fails closed instead of serving an empty database.
 
 Set the following Vercel environment variables before deploying:
 
 ```text
 NEX_AUTH_PUBLIC_URL
 NEX_AUTH_ADMIN_TOKEN
+DATABASE_URL=parad://<API_KEY>@local/<PROJECT>/<DATABASE>?passphrase=<URL_ENCODED_PASSPHRASE>&gateway=https://paradox-db.wasmer.app/v1
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 GITHUB_CLIENT_ID
 GITHUB_CLIENT_SECRET
-PARADOX_GATEWAY_URL
-PARADOX_API_KEY
-PARADOX_PASSPHRASE
-PARADOX_PROJECT
-PARADOX_DATABASE
+ENVX_OIDC_ISSUER_URL=https://<project-ref>.supabase.co/auth/v1
+ENVX_OIDC_CLIENT_ID
+ENVX_OIDC_CLIENT_SECRET
 ```
 
-`PARADOX_PROJECT` and `PARADOX_DATABASE` must identify the same production Paradox project and database that contain the Nexuss Auth records. The handler also accepts the aliases `PARADOX_PROJECT_NAME` and `PARADOX_DATABASE_NAME`, but the canonical names above are recommended.
-
-Use the gateway base URL including `/v1`, for example `https://paradox-db.onrender.com/v1`. `PARADOX_API_KEY` must be an API key issued by the Paradox-db gateway. `PARADOX_PASSPHRASE` is the encryption passphrase for the Nex-auth database; generate a long random value and keep it in Vercel secrets. The Vercel callback URL is `/oauth/callback` on the deployed auth domain and must be registered in both OAuth provider dashboards.
+The URL must point to the existing Paradox project/database and current Wasmer gateway; keep its API key and passphrase inside Vercel's encrypted environment settings. Preserve existing Google/GitHub credentials. Register the ENVX OIDC client with the exact Nex-auth callback `https://nexuss-auth.vercel.app/oauth/callback`; set `ENVX_OIDC_ISSUER_URL` to the issuer discovered from the existing Supabase project. Do not commit any secret-bearing URL or credential.

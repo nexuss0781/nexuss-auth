@@ -1,11 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { authorizationUrl, exchangeCode } from './providers.js';
 import { hashToken, jsonResponse, parseCookies, randomToken, serializeCookie, safeEqual } from './crypto.js';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
+import { IdentityLinkRequiredError } from './types.js';
 import type { Database, OAuthPurpose, ProjectStatus, Provider, ProjectRecord, ServerConfig, UserRecord } from './types.js';
 
-const providers = new Set<Provider>(['google', 'github']);
+const providers = new Set<Provider>(['google', 'github', 'envx']);
 const MAX_BODY_BYTES = 16 * 1024;
 
 type RequestContext = { request: Request; origin: string | null };
@@ -76,6 +77,10 @@ function providerList(value: unknown): Provider[] | null {
   return parsed as Provider[];
 }
 
+function projectAccessPermission(projectId: string): string {
+  return `project:${projectId}:access`;
+}
+
 function projectFromBody(body: Record<string, unknown>, existing?: ProjectRecord): ProjectRecord | null {
   const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : existing?.projectId;
   const name = typeof body.name === 'string' ? body.name.trim() : existing?.name;
@@ -85,13 +90,25 @@ function projectFromBody(body: Record<string, unknown>, existing?: ProjectRecord
   const allowedRedirectUris = body.allowedRedirectUris === undefined ? existing?.allowedRedirectUris : stringList(body.allowedRedirectUris);
   const allowedOrigins = body.allowedOrigins === undefined ? existing?.allowedOrigins : stringList(body.allowedOrigins);
   const enabledProviders = body.enabledProviders === undefined ? existing?.enabledProviders ?? ['google', 'github'] : providerList(body.enabledProviders);
+  let requiredProvider = existing?.requiredProvider ?? null;
+  if (body.requiredProvider !== undefined) {
+    if (body.requiredProvider === null) requiredProvider = null;
+    else if (typeof body.requiredProvider === 'string' && providers.has(body.requiredProvider as Provider)) requiredProvider = body.requiredProvider as Provider;
+    else return null;
+  }
+  let strictCredentials = existing?.strictCredentials ?? false;
+  if (body.strictCredentials !== undefined) {
+    if (typeof body.strictCredentials !== 'boolean') return null;
+    strictCredentials = body.strictCredentials;
+  }
   const status = body.status === undefined ? existing?.status ?? 'active' : body.status === 'active' || body.status === 'disabled' ? body.status as ProjectStatus : null;
   if (!projectId || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(projectId) || !name || !homepageUrl || !validHttpUrl(homepageUrl) || !allowedRedirectUris || allowedRedirectUris.length === 0 || !enabledProviders || !status) return null;
+  if (requiredProvider && !enabledProviders.includes(requiredProvider)) return null;
   if (allowedRedirectUris.some((uri) => !validHttpUrl(uri))) return null;
   const origins = allowedOrigins && allowedOrigins.length > 0 ? allowedOrigins : [...new Set(allowedRedirectUris.map((uri) => new URL(uri).origin))];
   if (origins.some((origin) => !validHttpUrl(origin) || new URL(origin).pathname !== '/')) return null;
   if (avatarUrl && !validHttpUrl(avatarUrl)) return null;
-  return { ownerUserId: existing?.ownerUserId ?? null, projectId, name, homepageUrl, description, avatarUrl, allowedRedirectUris, allowedOrigins: origins, enabledProviders, status };
+  return { ownerUserId: existing?.ownerUserId ?? null, projectId, name, homepageUrl, description, avatarUrl, allowedRedirectUris, allowedOrigins: origins, enabledProviders, requiredProvider, strictCredentials, status };
 }
 
 function callbackUri(config: ServerConfig): string {
@@ -160,9 +177,8 @@ function sessionTokenFromRequest(request: Request, config: ServerConfig): string
   return bearer || parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName] || null;
 }
 
-type ManagementIdentity = { kind: 'admin' } | { kind: 'user'; userId: string } | { kind: 'token'; userId: string; tokenId: string };
-
-type UserIdentity = { kind: 'user' | 'token'; userId: string; tokenId?: string };
+type ManagementIdentity = { kind: 'admin' } | { kind: 'user'; userId: string; session?: import('./types.js').SessionRecord } | { kind: 'token'; userId: string; tokenId: string; token?: import('./types.js').ApiTokenRecord };
+type UserIdentity = Exclude<ManagementIdentity, { kind: 'admin' }>;
 
 function managedUserId(identity: ManagementIdentity): string | undefined {
   return identity.kind === 'admin' ? undefined : identity.userId;
@@ -174,15 +190,15 @@ async function managementIdentity(request: Request, config: ServerConfig, db: Da
   const cookieToken = parseCookies(request.headers.get('cookie') ?? undefined)[config.cookieName];
   if (cookieToken) {
     const session = await db.getSession(hashToken(cookieToken));
-    if (session) return { kind: 'user', userId: session.userId };
+    if (session) return { kind: 'user', userId: session.userId, session };
   }
   if (!bearer) return null;
   const session = await db.getSession(hashToken(bearer));
-  if (session) return { kind: 'user', userId: session.userId };
+  if (session) return { kind: 'user', userId: session.userId, session };
   const apiToken = await db.getApiTokenByHash(hashToken(bearer));
   if (!apiToken) return null;
   void db.touchApiToken(apiToken.tokenId).catch((error) => console.error('Nexuss Auth API token usage update failed', { tokenId: apiToken.tokenId, error }));
-  return { kind: 'token', userId: apiToken.userId, tokenId: apiToken.tokenId };
+  return { kind: 'token', userId: apiToken.userId, tokenId: apiToken.tokenId, token: apiToken };
 }
 
 async function userIdentity(request: Request, config: ServerConfig, db: Database): Promise<UserIdentity | null> {
@@ -200,7 +216,9 @@ function systemDashboardProject(config: ServerConfig): ProjectRecord {
     avatarUrl: null,
     allowedRedirectUris: [config.publicUrl, `${config.publicUrl}/dashboard`],
     allowedOrigins: [new URL(config.publicUrl).origin],
-    enabledProviders: ['google', 'github'],
+    enabledProviders: ['google', 'github', 'envx'],
+    requiredProvider: null,
+    strictCredentials: false,
     status: 'active',
   };
 }
@@ -248,8 +266,12 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
         if (url.pathname.startsWith('/oauth/start/') && request.method === 'GET') {
           const provider = providerFrom(url.pathname.split('/').pop());
           if (!provider || !projectId || !project || project.status !== 'active' || !project.enabledProviders.includes(provider)) return jsonResponse({ error: 'invalid_project_or_provider' }, 400, headers);
+          if (project.requiredProvider && provider !== project.requiredProvider) return jsonResponse({ error: 'provider_not_allowed', message: 'This project requires its configured sign-in provider.' }, 403, headers);
+          if (provider === 'envx' && (!config.envxOidcIssuerUrl?.trim() || !config.envxOidcClientId?.trim() || !config.envxOidcClientSecret?.trim())) return jsonResponse({ error: 'envx_oidc_not_configured', message: 'ENVX OIDC is not configured for this service.' }, 503, headers);
           const redirectUri = url.searchParams.get('redirect_uri');
           if (!redirectUri || !isAllowedRedirect(project, redirectUri)) return jsonResponse({ error: 'redirect_uri_not_allowed' }, 400, headers);
+          const clientState = url.searchParams.get('client_state');
+          if (clientState !== null && (!/^[A-Za-z0-9_-]{20,128}$/.test(clientState) || url.searchParams.get('handoff') !== '1')) return jsonResponse({ error: 'invalid_client_state' }, 400, headers);
           const purpose: OAuthPurpose = url.searchParams.get('purpose') === 'github_authorization' ? 'github_authorization' : 'sign_in';
           if (purpose === 'github_authorization' && (provider !== 'github' || url.searchParams.get('handoff') !== '1')) return jsonResponse({ error: 'invalid_authorization_purpose' }, 400, headers);
           let authorizationUserId: string | null = null;
@@ -259,18 +281,21 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
             authorizationUserId = identity.userId;
           }
           const state = randomToken(32);
+          const nonce = provider === 'envx' ? randomToken(32) : null;
+          const codeVerifier = provider === 'envx' ? randomToken(48) : null;
+          const codeChallenge = codeVerifier ? createHash('sha256').update(codeVerifier).digest('base64url') : '';
           try {
-            await db.createOAuthState({
-              stateHash: hashToken(state),
-              projectId,
-              provider,
-              redirectUri,
-              handoff: url.searchParams.get('handoff') === '1',
-              purpose,
-              userId: authorizationUserId,
-              expiresAt: new Date(Date.now() + config.stateTtlSeconds * 1000),
-            });
-            return Response.redirect(authorizationUrl(config, provider, state, callbackUri(config), purpose), 302);
+            await db.createOAuthState({ stateHash: hashToken(state), projectId, provider, redirectUri, handoff: url.searchParams.get('handoff') === '1', purpose, userId: authorizationUserId, codeVerifier, nonce, clientState, expiresAt: new Date(Date.now() + config.stateTtlSeconds * 1000) });
+            try {
+              const location = provider === 'envx'
+                ? await authorizationUrl(config, provider, state, callbackUri(config), purpose, { codeChallenge, nonce: nonce! })
+                : authorizationUrl(config, provider, state, callbackUri(config), purpose);
+              return Response.redirect(location, 302);
+            } catch (error) {
+              const errorId = randomUUID();
+              console.error('OAuth start failed while discovering provider', { errorId, provider, projectId, error });
+              return jsonResponse({ error: 'oauth_provider_unavailable', errorId, message: provider === 'envx' ? 'ENVX OIDC is not configured or unavailable.' : 'OAuth provider is unavailable.' }, 503, headers);
+            }
           } catch (error) {
             const errorId = randomUUID();
             console.error('OAuth start failed while preparing state', { errorId, provider, projectId, error });
@@ -287,8 +312,11 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const stateRecord = await db.consumeOAuthState(hashToken(state));
           if (!stateRecord || stateRecord.expiresAt.getTime() <= Date.now()) return new Response('Invalid or expired OAuth state', { status: 400 });
           if (oauthError || !code) return Response.redirect(redirectWith(stateRecord.redirectUri, 'nex_auth', 'denied'), 302);
-          const profile = await exchangeCode(config, stateRecord.provider, code, callbackUri(config));
+          const callbackProject = stateRecord.projectId === 'nexuss-dashboard' ? systemDashboardProject(config) : await db.getProject(stateRecord.projectId);
+          if (!callbackProject || callbackProject.status !== 'active' || (callbackProject.requiredProvider && callbackProject.requiredProvider !== stateRecord.provider)) return new Response('The requested project or provider is no longer active.', { status: 403 });
+          const profile = await exchangeCode(config, stateRecord.provider, code, callbackUri(config), stateRecord.provider === 'envx' ? { codeVerifier: stateRecord.codeVerifier || '', nonce: stateRecord.nonce || '' } : undefined);
           if (!profile.providerAccountId) throw new Error('OAuth provider returned no account id');
+          const authorizedProfile = { ...profile, permissions: [projectAccessPermission(stateRecord.projectId)] };
           let user: UserRecord;
           if (stateRecord.purpose === 'github_authorization') {
             if (stateRecord.provider !== 'github' || !stateRecord.userId) throw new Error('GitHub authorization is not attached to an existing user');
@@ -296,7 +324,12 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
             if (!existingUser) throw new Error('The existing Nexuss Auth profile could not be loaded');
             user = existingUser;
           } else {
-            user = await db.findOrCreateUser(profile);
+            try {
+              user = await db.findOrCreateUser(profile);
+            } catch (error) {
+              if (error instanceof IdentityLinkRequiredError) return new Response('This ENVX identity must be explicitly linked to the existing Nexuss Auth account before it can inherit that account’s projects.', { status: 409, headers: { ...headers, 'cache-control': 'no-store' } });
+              throw error;
+            }
           }
           const sessionToken = randomToken(32);
           const secure = new URL(config.publicUrl).protocol === 'https:';
@@ -308,7 +341,7 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           if (stateRecord.purpose === 'github_authorization' && db.finalizeOAuthAuthorization) {
             await db.finalizeOAuthAuthorization({
               state: stateRecord,
-              profile,
+              profile: authorizedProfile,
               sessionTokenHash: hashToken(sessionToken),
               sessionExpiresAt,
               githubGrantHash: githubGrantToken ? hashToken(githubGrantToken) : null,
@@ -321,13 +354,17 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
             if (stateRecord.purpose === 'github_authorization' && stateRecord.provider === 'github' && profile.accessToken) {
               await db.saveGithubConnection({ userId: user.id, githubAccountId: profile.providerAccountId, login: profile.username || profile.name || profile.providerAccountId, accessToken: profile.accessToken, refreshToken: profile.refreshToken || null, expiresAt: profile.expiresInSeconds ? new Date(Date.now() + profile.expiresInSeconds * 1_000) : null, scopes: profile.scopes || [], updatedAt: new Date() });
             }
-            await db.createSession({ userId: user.id, projectId: stateRecord.projectId, tokenHash: hashToken(sessionToken), expiresAt: sessionExpiresAt });
+            await db.createSession({ userId: user.id, projectId: stateRecord.projectId, provider: authorizedProfile.provider, issuer: authorizedProfile.issuer ?? null, subject: authorizedProfile.subject ?? authorizedProfile.providerAccountId, permissions: authorizedProfile.permissions, tokenHash: hashToken(sessionToken), expiresAt: sessionExpiresAt });
             if (githubGrantToken) await db.createGithubGrant({ grantHash: hashToken(githubGrantToken), projectId: stateRecord.projectId, userId: user.id, expiresAt: githubGrantExpiresAt! });
             if (handoffToken) {
             await db.createHandoff({
               handoffHash: hashToken(handoffToken),
               projectId: stateRecord.projectId,
               userId: user.id,
+              provider: authorizedProfile.provider,
+              issuer: authorizedProfile.issuer ?? null,
+              subject: authorizedProfile.subject ?? authorizedProfile.providerAccountId,
+              permissions: authorizedProfile.permissions,
               githubGrantToken,
               expiresAt: handoffExpiresAt!,
             });
@@ -336,8 +373,19 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           let destination = isLoopbackRedirect(stateRecord.redirectUri)
             ? redirectWith(redirectWith(stateRecord.redirectUri, 'nex_auth', 'success'), 'session_token', sessionToken)
             : redirectWith(stateRecord.redirectUri, 'nex_auth', 'success');
-          if (handoffToken) destination = redirectWith(destination, 'handoff_token', handoffToken);
           console.info('Nexuss Auth OAuth callback completed', { provider: stateRecord.provider, purpose: stateRecord.purpose ?? 'sign_in', durationMs: Date.now() - callbackStartedAt, handoff: Boolean(handoffToken) });
+          if (handoffToken && stateRecord.provider === 'envx') {
+            const escapeHtml = (value: string): string => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            const scriptNonce = randomToken(18);
+            const clientStateField = stateRecord.clientState ? `<input type="hidden" name="client_state" value="${escapeHtml(stateRecord.clientState)}">` : '';
+            const form = `<form id="handoff" method="post" action="${escapeHtml(stateRecord.redirectUri)}"><input type="hidden" name="project_id" value="${escapeHtml(stateRecord.projectId)}"><input type="hidden" name="handoff_token" value="${escapeHtml(handoffToken)}">${clientStateField}<noscript><button type="submit">Continue</button></noscript></form><script nonce="${scriptNonce}">document.getElementById('handoff').submit()</script>`;
+            const formOrigin = new URL(stateRecord.redirectUri).origin;
+            return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body>${form}</body></html>`, {
+              status: 200,
+              headers: { ...headers, 'content-type': 'text/html; charset=utf-8', 'set-cookie': serializeCookie(config.cookieName, sessionToken, { secure, maxAge: config.sessionTtlSeconds }), 'referrer-policy': 'no-referrer', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'content-security-policy': `default-src 'none'; script-src 'nonce-${scriptNonce}'; form-action ${formOrigin}; base-uri 'none'; frame-ancestors 'none'; object-src 'none'` },
+            });
+          }
+          if (handoffToken) destination = redirectWith(destination, 'handoff_token', handoffToken);
           return new Response(null, {
             status: 302,
             headers: {
@@ -354,10 +402,11 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const requestedProjectId = typeof body.projectId === 'string' ? body.projectId : '';
           if (!handoffToken || !requestedProjectId) return jsonResponse({ error: 'handoff_required' }, 400, headers);
           const handoff = await db.consumeHandoff(hashToken(handoffToken));
-          if (!handoff || handoff.expiresAt.getTime() <= Date.now() || handoff.projectId !== requestedProjectId) return jsonResponse({ error: 'invalid_handoff' }, 401, headers);
+          const handoffProject = requestedProjectId === 'nexuss-dashboard' ? systemDashboardProject(config) : await db.getProject(requestedProjectId);
+          if (!handoff || !handoffProject || handoffProject.status !== 'active' || handoff.expiresAt.getTime() <= Date.now() || handoff.projectId !== requestedProjectId || (handoffProject.requiredProvider && handoff.provider !== handoffProject.requiredProvider)) return jsonResponse({ error: 'invalid_handoff' }, 401, headers);
           const user = await db.getUser(handoff.userId);
           if (!user) return jsonResponse({ error: 'user_not_found' }, 401, headers);
-          return jsonResponse({ user, ...(handoff.githubGrantToken ? { githubGrantToken: handoff.githubGrantToken } : {}) }, 200, headers);
+          return jsonResponse({ user, auth: { projectId: handoff.projectId, provider: handoff.provider, issuer: handoff.issuer, subject: handoff.subject, permissions: handoff.permissions ?? [] }, ...(handoff.githubGrantToken ? { githubGrantToken: handoff.githubGrantToken } : {}) }, 200, headers);
         }
 
         if ((url.pathname === '/v1/github/repositories' && request.method === 'POST') || (url.pathname.startsWith('/v1/github/repositories/') && (request.method === 'PATCH' || request.method === 'DELETE'))) {
@@ -605,10 +654,16 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
 
         if (url.pathname === '/v1/me' && request.method === 'GET') {
           if (!projectId || !project) return jsonResponse({ error: 'project_required' }, 400, headers);
+          if (project.status !== 'active') return jsonResponse({ error: 'project_disabled' }, 403, headers);
           const identity = await userIdentity(request, config, db);
-          if (!identity) return jsonResponse({ user: null }, 200, headers);
+          if (!identity) return jsonResponse({ user: null, auth: null }, 200, headers);
+          const provenance = identity.kind === 'user' ? identity.session : identity.token;
+          const scopedProject = provenance?.projectId ?? null;
+          if (scopedProject && scopedProject !== projectId) return jsonResponse({ error: 'project_mismatch' }, 403, headers);
+          if (project.strictCredentials && (!scopedProject || (project.requiredProvider && provenance?.provider !== project.requiredProvider) || !(provenance?.permissions ?? []).includes(projectAccessPermission(projectId)) || (project.requiredProvider === 'envx' && (provenance?.issuer !== config.envxOidcIssuerUrl || !provenance?.subject)))) return jsonResponse({ error: 'strict_credentials_required' }, 403, headers);
           const user = await db.getUser(identity.userId);
-          return jsonResponse({ user }, 200, headers);
+          const auth = provenance ? { projectId: scopedProject, provider: provenance.provider, issuer: provenance.issuer, subject: provenance.subject, permissions: provenance.permissions } : { projectId: null, provider: null, issuer: null, subject: null, permissions: [] };
+          return jsonResponse({ user, auth }, 200, headers);
         }
 
         if (url.pathname === '/v1/tokens' && request.method === 'GET') {
@@ -622,9 +677,15 @@ export function createAuthApp(config: ServerConfig, db: Database): { fetch(reque
           const identity = await userIdentity(request, config, db);
           if (!identity || identity.kind !== 'user') return jsonResponse({ error: 'session_required' }, 401, headers);
           const body = await jsonBody(request);
+          const tokenProjectId = typeof body.projectId === 'string' ? body.projectId : projectId;
+          if (!tokenProjectId || !project || tokenProjectId !== projectId) return jsonResponse({ error: 'project_required' }, 400, headers);
+          if (project.status !== 'active') return jsonResponse({ error: 'project_disabled' }, 403, headers);
+          const source = identity.session;
+          if (source?.projectId !== tokenProjectId && project.ownerUserId !== identity.userId && !(source?.permissions ?? []).includes(projectAccessPermission(tokenProjectId))) return jsonResponse({ error: 'project_access_required' }, 403, headers);
+          if (project.strictCredentials && (!source || (project.requiredProvider && source.provider !== project.requiredProvider) || (project.requiredProvider === 'envx' && (source.issuer !== config.envxOidcIssuerUrl || !source.subject)))) return jsonResponse({ error: 'strict_credentials_required' }, 403, headers);
           const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim().slice(0, 80) : 'CLI token';
           const rawToken = `nxa_${randomToken(32)}`;
-          const record = { tokenId: randomUUID(), userId: identity.userId, tokenHash: hashToken(rawToken), tokenPrefix: rawToken.slice(0, 12), label, createdAt: new Date(), lastUsedAt: null, revokedAt: null };
+          const record = { tokenId: randomUUID(), userId: identity.userId, projectId: tokenProjectId, provider: source?.provider ?? null, issuer: source?.issuer ?? null, subject: source?.subject ?? null, permissions: [projectAccessPermission(tokenProjectId)], tokenHash: hashToken(rawToken), tokenPrefix: rawToken.slice(0, 12), label, createdAt: new Date(), lastUsedAt: null, revokedAt: null };
           await db.createApiToken(record);
           return jsonResponse({ token: rawToken, tokenId: record.tokenId, tokenPrefix: record.tokenPrefix, label: record.label, createdAt: record.createdAt.toISOString(), warning: 'Copy this token now. It will not be shown again.' }, 201, headers);
         }

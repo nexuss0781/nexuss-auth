@@ -9,6 +9,18 @@ test('buildLoginUrl creates a project-scoped Google login URL', () => {
   assert.equal(url.searchParams.get('redirect_uri'), 'https://demo.example.com/login');
 });
 
+test('buildLoginUrl and NexAuthClient support project-scoped ENVX OIDC login', () => {
+  const config = { projectId: 'paradox', authUrl: 'https://auth.example.com' };
+  const redirectUri = 'https://paradox.example.com/auth/callback';
+  const url = new URL(buildLoginUrl(config, 'envx', redirectUri));
+  assert.equal(url.pathname, '/oauth/start/envx');
+  assert.equal(url.searchParams.get('project_id'), 'paradox');
+  assert.equal(url.searchParams.get('redirect_uri'), redirectUri);
+  const auth = createAuth(config);
+  assert.equal(new URL(auth.getLoginUrl('envx', { redirectUri })).pathname, '/oauth/start/envx');
+  assert.equal(typeof auth.signInWithEnvx, 'function');
+});
+
 test('buildLoginUrl requests a server-side handoff when enabled', () => {
   const url = new URL(buildLoginUrl({ projectId: 'demo', authUrl: 'https://auth.example.com' }, 'google', 'https://demo.example.com/auth/callback', { handoff: true }));
   assert.equal(url.searchParams.get('handoff'), '1');
