@@ -13,12 +13,15 @@ GOOGLE_CLIENT_ID=<protected Google client ID>
 GOOGLE_CLIENT_SECRET=<protected Google client secret>
 GITHUB_CLIENT_ID=<protected GitHub client ID>
 GITHUB_CLIENT_SECRET=<protected GitHub client secret>
+ENVX_OIDC_ISSUER_URL=https://<project-ref>.supabase.co/auth/v1
+ENVX_OIDC_CLIENT_ID=<protected ENVX OAuth client ID>
+ENVX_OIDC_CLIENT_SECRET=<protected ENVX OAuth client secret>
 PARADOX_GATEWAY_URL=<protected or approved Paradox gateway URL>
 PARADOX_API_KEY=<protected Paradox API key>
 PARADOX_PASSPHRASE=<protected Paradox passphrase>
 ```
 
-Never print or commit these values. Provider consoles must register Nexuss Auth’s callback, for example:
+Never print or commit these values. The ENVX client must use the existing Supabase Auth OAuth Server project, request `openid email profile`, and register Nexuss Auth’s callback—not the application callback. Each upstream provider must register Nexuss Auth’s callback, for example:
 
 ```text
 https://auth.example.com/oauth/callback
